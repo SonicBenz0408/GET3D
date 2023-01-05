@@ -236,7 +236,7 @@ class ImageFolderDataset(Dataset):
             for folder in folder_list:
                 rgb_list = sorted(os.listdir(folder))
                 rgb_list = [n for n in rgb_list if n.endswith('.png') or n.endswith('.jpg')]
-                rgb_file_name_list = [os.path.join(folder, n) for n in rgb_list]
+                rgb_file_name_list = [os.path.join(folder, n).replace('\\', '/') for n in rgb_list]
                 all_img_list.extend(rgb_file_name_list)
                 all_mask_list.extend(rgb_list)
 
@@ -317,7 +317,7 @@ class ImageFolderDataset(Dataset):
             mask = np.ones(1)
         img = resize_img.transpose(2, 0, 1)
         background = np.zeros_like(img)
-        img = img * (mask > 0).astype(np.float) + background * (1 - (mask > 0).astype(np.float))
+        img = img * (mask > 0).astype(np.float32) + background * (1 - (mask > 0).astype(np.float32))
         return np.ascontiguousarray(img), condinfo, np.ascontiguousarray(mask)
 
     def _load_raw_image(self, raw_idx):

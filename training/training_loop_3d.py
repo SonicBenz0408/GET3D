@@ -82,13 +82,15 @@ def training_loop(
         data_loader_kwargs={},  # Options for torch.utils.data.DataLoader.
         G_kwargs={},  # Options for generator network.
         D_kwargs={},  # Options for discriminator network.
+        C_kwargs={},  # Options for classifier network.
         G_opt_kwargs={},  # Options for generator optimizer.
         D_opt_kwargs={},  # Options for discriminator optimizer.
+        C_opt_kwargs={},  # Options for classifier optimizer.
         loss_kwargs={},  # Options for loss function.
         metrics=[],  # Metrics to evaluate during training.
         random_seed=0,  # Global random seed.
         num_gpus=1,  # Number of GPUs participating in the training.
-        rank=0,  # Rank of the current process in [0, num_gpus[.
+        rank=0,  # Rank of the current process in [0, num_gpus].
         batch_size=4,  # Total batch size for one training iteration. Can be larger than batch_gpu * num_gpus.
         batch_gpu=4,  # Number of samples processed at a time by one GPU.
         ema_kimg=10,  # Half-life of the exponential moving average (EMA) of generator weights.
@@ -149,10 +151,13 @@ def training_loop(
         print('Constructing networks...')
 
     # Constructing networks
+    # common_kwargs = dict(
+    #     c_dim=training_set.label_dim, img_resolution=training_set.resolution, img_channels=training_set.num_channels)
     common_kwargs = dict(
-        c_dim=training_set.label_dim, img_resolution=training_set.resolution, img_channels=training_set.num_channels)
+        img_resolution=training_set.resolution, img_channels=training_set.num_channels)
     G_kwargs['device'] = device
     D_kwargs['device'] = device
+    #C_kwargs['device'] = device
 
     if num_gpus > 1:
         torch.distributed.barrier()
@@ -160,6 +165,8 @@ def training_loop(
         device)  # subclass of torch.nn.Module
     D = dnnlib.util.construct_class_by_name(**D_kwargs, **common_kwargs).train().requires_grad_(False).to(
         device)  # subclass of torch.nn.Module
+    # C = dnnlib.util.construct_class_by_name(**C_kwargs, **common_kwargs).train().requires_grad_(False).to(
+    #     device)  # subclass of torch.nn.Module
     G_ema = copy.deepcopy(G).eval()  # deepcopy can make sure they are correct.
     if resume_pretrain is not None and (rank == 0):
         # We're not reusing the loading function from stylegan3 codebase,
@@ -275,6 +282,8 @@ def training_loop(
             all_gen_c = torch.from_numpy(np.stack(all_gen_c)).pin_memory().to(device)
             all_gen_c = [phase_gen_c.split(batch_gpu) for phase_gen_c in all_gen_c.split(batch_size // num_gpus)]
         optim_step += 1
+        print(phase_real_c)
+        print(all_gen_c)
         # Execute training phases.
         for phase, phase_gen_z, phase_gen_c in zip(phases, all_gen_z, all_gen_c):
             if batch_idx % phase.interval != 0:

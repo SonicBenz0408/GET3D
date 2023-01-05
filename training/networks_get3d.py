@@ -15,7 +15,7 @@ from training.sample_camera_distribution import sample_camera, create_camera_fro
 from uni_rep.rep_3d.dmtet import DMTetGeometry
 from uni_rep.camera.perspective_camera import PerspectiveCamera
 from uni_rep.render.neural_render import NeuralRender
-from training.discriminator_architecture import Discriminator
+from training.discriminator_architecture import Discriminator, Classifier, Discriminator_new
 from training.geometry_predictor import Conv3DImplicitSynthesisNetwork, TriPlaneTex, \
     MappingNetwork, ToRGBLayer, TriPlaneTexGeo
 

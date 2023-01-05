@@ -40,6 +40,7 @@ class StyleGAN2Loss(Loss):
         self.device = device
         self.G = G
         self.D = D
+        # self.C = C
         self.r1_gamma = r1_gamma
         self.style_mixing_prob = style_mixing_prob
         self.pl_weight = pl_weight
@@ -90,6 +91,9 @@ class StyleGAN2Loss(Loss):
 
     def accumulate_gradients(
             self, phase, real_img, real_c, gen_z, gen_c, gain, cur_nimg):
+
+        # real_c: [[rot, ele, label], ...]
+        # gen_c : [label, label, ...]
         assert phase in ['Gmain', 'Greg', 'Gboth', 'Dmain', 'Dreg', 'Dboth']
         if self.pl_weight == 0:
             phase = {'Greg': 'none', 'Gboth': 'Gmain'}.get(phase, phase)
@@ -116,20 +120,22 @@ class StyleGAN2Loss(Loss):
                     assert NotImplementedError
                 # Send to discriminator
                 gen_logits = self.run_D(gen_img, camera_condition, mask_pyramid=mask_pyramid)
-                gen_logits, gen_logits_mask = gen_logits
+                gen_logits, gen_logits_c, gen_logits_mask, gen_logits_mask_c = gen_logits
 
                 training_stats.report('Loss/scores/fake', gen_logits)
                 training_stats.report('Loss/signs/fake', gen_logits.sign())
                 loss_Gmain = torch.nn.functional.softplus(-gen_logits).mean()
+                loss_Gmain += torch.nn.functional.cross_entropy(gen_logits_c, gen_c)
                 training_stats.report('Loss/G/loss_rgb', loss_Gmain)
 
                 training_stats.report('Loss/scores/fake_mask', gen_logits_mask)
                 training_stats.report('Loss/signs/fake_mask', gen_logits_mask.sign())
                 loss_Gmask = torch.nn.functional.softplus(-gen_logits_mask).mean()
+                loss_Gmask += torch.nn.functional.cross_entropy(gen_logits_mask_c, gen_c)
                 training_stats.report('Loss/G/loss_mask', loss_Gmask)
                 loss_Gmain += loss_Gmask
                 training_stats.report('Loss/G/loss', loss_Gmain)
-
+                
                 # Regularization loss for sdf prediction
                 sdf_reg_loss_entropy = sdf_reg_loss_batch(gen_sdf, self.G.synthesis.dmtet_geometry.all_edges).mean() * 0.01
                 training_stats.report('Loss/G/sdf_reg', sdf_reg_loss_entropy)
@@ -162,18 +168,19 @@ class StyleGAN2Loss(Loss):
                 # Send it to discriminator
                 gen_logits = self.run_D(
                     gen_img, camera_condition, update_emas=True, mask_pyramid=mask_pyramid)
-
-                gen_logits, gen_logits_mask = gen_logits
+                gen_logits, gen_logits_c, gen_logits_mask, gen_logits_mask_c = gen_logits
 
                 training_stats.report('Loss/scores/fake', gen_logits)
                 training_stats.report('Loss/signs/fake', gen_logits.sign())
                 loss_Dgen = torch.nn.functional.softplus(gen_logits).mean()  # -log(1 - sigmoid(gen_logits))
+                loss_Dgen += torch.nn.functional.cross_entropy(gen_logits_c, gen_c)
                 training_stats.report('Loss/D/loss_genrgb', loss_Dgen)
 
                 training_stats.report('Loss/scores/fake_mask', gen_logits_mask)
                 training_stats.report('Loss/signs/fake_mask', gen_logits_mask.sign())
                 loss_Dgen_mask = torch.nn.functional.softplus(
                     gen_logits_mask).mean()  # -log(1 - sigmoid(gen_logits))
+                loss_Dgen_mask += torch.nn.functional.cross_entropy(gen_logits_mask_c, gen_c)
                 training_stats.report('Loss/D/loss_gen_mask', loss_Dgen_mask)
                 loss_Dgen += loss_Dgen_mask
 
@@ -188,8 +195,8 @@ class StyleGAN2Loss(Loss):
                 # Optimize for the real image
                 real_img_tmp = real_img.detach().requires_grad_(phase in ['Dreg', 'Dboth'])
 
-                real_logits = self.run_D(real_img_tmp, real_c, )
-                real_logits, real_logits_mask = real_logits
+                real_logits = self.run_D(real_img_tmp, real_c[:, -1], )
+                real_logits, real_logits_c, real_logits_mask, real_logits_mask_c = real_logits
 
                 training_stats.report('Loss/scores/real', real_logits)
                 training_stats.report('Loss/signs/real', real_logits.sign())
@@ -200,10 +207,12 @@ class StyleGAN2Loss(Loss):
                 loss_Dreal = 0
                 if phase in ['Dmain', 'Dboth']:
                     loss_Dreal = torch.nn.functional.softplus(-real_logits).mean()  # -log(sigmoid(real_logits))
+                    loss_Dreal += torch.nn.functional.cross_entropy(real_logits_c, real_c[:, -1])
                     training_stats.report('Loss/D/loss_real_rgb', loss_Dreal)
 
                     loss_Dreal_mask = torch.nn.functional.softplus(
                         -real_logits_mask).mean()  # -log(sigmoid(real_logits))
+                    loss_Dreal_mask += torch.nn.functional.cross_entropy(real_logits_mask_c, real_c[:, -1])
                     training_stats.report('Loss/D/loss_real_mask', loss_Dreal_mask)
                     loss_Dreal += loss_Dreal_mask
                     training_stats.report('Loss/D/loss', loss_Dgen + loss_Dreal)
