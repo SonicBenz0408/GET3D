@@ -94,6 +94,8 @@ class StyleGAN2Loss(Loss):
 
         # real_c: [[rot, ele, label], ...]
         # gen_c : [label, label, ...]
+
+        gen_c = gen_c.unsqueeze(1)
         assert phase in ['Gmain', 'Greg', 'Gboth', 'Dmain', 'Dreg', 'Dboth']
         if self.pl_weight == 0:
             phase = {'Greg': 'none', 'Gboth': 'Gmain'}.get(phase, phase)
