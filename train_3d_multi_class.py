@@ -222,7 +222,7 @@ def main(**kwargs):
     c.G_kwargs = dnnlib.EasyDict(
         class_name=None, z_dim=opts.latent_dim, w_dim=opts.latent_dim, mapping_kwargs=dnnlib.EasyDict())
     c.D_kwargs = dnnlib.EasyDict(
-        class_name='training.networks_get3d.Discriminator_new', block_kwargs=dnnlib.EasyDict(),
+        class_name='training.networks_get3d.Discriminator_multi', block_kwargs=dnnlib.EasyDict(),
         mapping_kwargs=dnnlib.EasyDict(), epilogue_kwargs=dnnlib.EasyDict())
     c.G_opt_kwargs = dnnlib.EasyDict(class_name='torch.optim.Adam', betas=[0, 0.99], eps=1e-8)
     c.D_opt_kwargs = dnnlib.EasyDict(class_name='torch.optim.Adam', betas=[0, 0.99], eps=1e-8)
