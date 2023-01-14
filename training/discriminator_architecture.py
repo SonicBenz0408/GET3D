@@ -405,7 +405,7 @@ class DiscriminatorBlock(torch.nn.Module):
             x = self.conv1(x, gain=np.sqrt(0.5))
             x = y.add_(x)
         else:
-            print(x.shape)
+            # print(x.shape)
             x = self.conv0(x)
             x = self.conv1(x)
 
@@ -802,7 +802,7 @@ class Discriminator_multi(torch.nn.Module):
             cur_layer_idx += block.num_layers
         if self.c_dim > 0:
             self.mapping = MappingNetwork(z_dim=0, c_dim=self.c_dim, w_dim=cmap_dim, num_ws=None, w_avg_beta=None, device=device, **mapping_kwargs)
-        self.b4 = DiscriminatorEpilogue_multi(channels_dict[4], cmap_dim=1, resolution=4, device=device, **epilogue_kwargs, **common_kwargs)
+        self.b4 = DiscriminatorEpilogue_multi(channels_dict[4], cmap_dim=cmap_dim, resolution=4, device=device, **epilogue_kwargs, **common_kwargs)
         #self.b4_c = DiscriminatorEpilogue(channels_dict[4], cmap_dim=cmap_dim, resolution=4, device=device, **epilogue_kwargs, **common_kwargs)
 
         # Step 2: set up discriminator for mask image
@@ -827,7 +827,7 @@ class Discriminator_multi(torch.nn.Module):
                 z_dim=0, c_dim=self.c_dim, w_dim=cmap_dim, num_ws=None, w_avg_beta=None, device=device,
                 **mapping_kwargs)
         self.mask_b4 = DiscriminatorEpilogue_multi(
-            mask_channels_dict[4], cmap_dim=1, resolution=4, device=device, **epilogue_kwargs,
+            mask_channels_dict[4], cmap_dim=cmap_dim, resolution=4, device=device, **epilogue_kwargs,
             **common_kwargs)
         # self.mask_b4_c = DiscriminatorEpilogue(
         #     mask_channels_dict[4], cmap_dim=cmap_dim, resolution=4, device=device, **epilogue_kwargs,

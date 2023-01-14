@@ -397,11 +397,10 @@ class MappingNetwork(torch.nn.Module):
         if num_ws is not None and w_avg_beta is not None:
             self.register_buffer('w_avg', torch.zeros([w_dim]))
 
-    def update_w_avg(self, device='device', c=None):
+    def update_w_avg(self, device='device', c=None, cmap_dim=None):
         n_z = 100000  ################################################################
         z = torch.randn([n_z, self.z_dim], device=device)
-        if not c is None:
-            c = c[:n_z]  #########################
+        c = torch.randint(0, cmap_dim, [n_z, 1], device=device)
         ws = self.forward(z, c)
         avg_ws = torch.mean(ws, dim=0)[0]
         self.w_avg = self.w_avg * 0.0 + avg_ws
