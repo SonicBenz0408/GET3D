@@ -95,7 +95,7 @@ class StyleGAN2Loss(Loss):
         # real_c: [[rot, ele, label], ...]
         # gen_c : [label, label, ...]
 
-        gen_c = gen_c.unsqueeze(1)
+        # gen_c = gen_c.unsqueeze(1)
         assert phase in ['Gmain', 'Greg', 'Gboth', 'Dmain', 'Dreg', 'Dboth']
         if self.pl_weight == 0:
             phase = {'Greg': 'none', 'Gboth': 'Gmain'}.get(phase, phase)
@@ -209,12 +209,12 @@ class StyleGAN2Loss(Loss):
                 loss_Dreal = 0
                 if phase in ['Dmain', 'Dboth']:
                     loss_Dreal = torch.nn.functional.softplus(-real_logits).mean()  # -log(sigmoid(real_logits))
-                    loss_Dreal += torch.nn.functional.cross_entropy(real_logits_c, real_c[:, -1])
+                    loss_Dreal += torch.nn.functional.cross_entropy(real_logits_c, real_c[:, -1].long())
                     training_stats.report('Loss/D/loss_real_rgb', loss_Dreal)
 
                     loss_Dreal_mask = torch.nn.functional.softplus(
                         -real_logits_mask).mean()  # -log(sigmoid(real_logits))
-                    loss_Dreal_mask += torch.nn.functional.cross_entropy(real_logits_mask_c, real_c[:, -1])
+                    loss_Dreal_mask += torch.nn.functional.cross_entropy(real_logits_mask_c, real_c[:, -1].long())
                     training_stats.report('Loss/D/loss_real_mask', loss_Dreal_mask)
                     loss_Dreal += loss_Dreal_mask
                     training_stats.report('Loss/D/loss', loss_Dgen + loss_Dreal)

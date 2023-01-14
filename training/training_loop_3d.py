@@ -233,7 +233,8 @@ def training_loop(
             save_image_grid(images, os.path.join(run_dir, 'reals.png'), drange=[0, 255], grid_size=grid_size)
         torch.manual_seed(1234)
         grid_z = torch.randn([images.shape[0], G.z_dim], device=device).split(1)  # This one is the latent code for shape generation
-        grid_c = torch.ones(images.shape[0], device=device).split(1)  # This one is not used, just for the compatiable with the code structure.
+        #grid_c = torch.ones(images.shape[0], device=device).split(1)  # This one is not used, just for the compatiable with the code structure.
+        grid_c = torch.randint(0, D_kwargs['cmap_dim'], images.shape[0], device=device).split(1)  # This one is not used, just for the compatiable with the code structure.
 
     if rank == 0:
         print('Initializing logs...')
@@ -282,8 +283,6 @@ def training_loop(
             all_gen_c = torch.from_numpy(np.stack(all_gen_c)).pin_memory().to(device)
             all_gen_c = [phase_gen_c.split(batch_gpu) for phase_gen_c in all_gen_c.split(batch_size // num_gpus)]
         optim_step += 1
-        print(phase_real_c)
-        print(all_gen_c)
         # Execute training phases.
         for phase, phase_gen_z, phase_gen_c in zip(phases, all_gen_z, all_gen_c):
             if batch_idx % phase.interval != 0:
@@ -379,6 +378,7 @@ def training_loop(
                     G_ema, grid_z, grid_c, run_dir, cur_nimg, grid_size, cur_tick,
                     image_snapshot_ticks,
                     save_all=(cur_tick % (image_snapshot_ticks * 4) == 0) and training_set.resolution < 512,
+                    cmap_dim=D_kwargs['cmap_dim']
                 )
                 print('==> saved visualization')
 
