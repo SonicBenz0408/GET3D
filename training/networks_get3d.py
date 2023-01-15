@@ -576,7 +576,7 @@ class GeneratorDMTETMesh(torch.nn.Module):
         self.mapping_geo = MappingNetwork(
             z_dim=z_dim, c_dim=c_dim, w_dim=w_dim, num_ws=self.num_ws_geo,
             device=self.synthesis.device, **mapping_kwargs)
-
+            
     def update_w_avg(self, cmap_dim=None):
         # Update the the average latent to compute truncation
         self.mapping.update_w_avg(self.device, cmap_dim)

@@ -147,10 +147,10 @@ def save_visualization_for_interpolation(
 def save_visualization(
         G_ema, grid_z, grid_c, run_dir, cur_nimg, grid_size, cur_tick,
         image_snapshot_ticks=50,
+        cmap_dim=None,
         save_gif_name=None,
         save_all=True,
         grid_tex_z=None,
-        cmap_dim=None
 ):
     '''
     Save visualization during training
@@ -168,7 +168,7 @@ def save_visualization(
     :return:
     '''
     with torch.no_grad():
-        G_ema.update_w_avg(c=cmap_dim)
+        G_ema.update_w_avg(cmap_dim=cmap_dim)
         camera_list = G_ema.synthesis.generate_rotate_camera_list(n_batch=grid_z[0].shape[0])
         camera_img_list = []
         if not save_all:

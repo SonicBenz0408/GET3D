@@ -233,8 +233,7 @@ def training_loop(
             save_image_grid(images, os.path.join(run_dir, 'reals.png'), drange=[0, 255], grid_size=grid_size)
         torch.manual_seed(1234)
         grid_z = torch.randn([images.shape[0], G.z_dim], device=device).split(1)  # This one is the latent code for shape generation
-        #grid_c = torch.ones(images.shape[0], device=device).split(1)  # This one is not used, just for the compatiable with the code structure.
-        grid_c = torch.randint(0, D_kwargs['cmap_dim'], images.shape[0], device=device).split(1)  # This one is not used, just for the compatiable with the code structure.
+        grid_c = torch.randint(0, D_kwargs['cmap_dim'], [images.shape[0], G.c_dim], device=device).split(1)  # This one is the condition to controll generation of different classes
 
     if rank == 0:
         print('Initializing logs...')
@@ -368,7 +367,9 @@ def training_loop(
             if rank == 0:
                 print()
                 print('Aborting...')
-
+        
+        print(grid_c[0].shape)
+        print(grid_z[0].shape)
         # Save image snapshot.
         if (rank == 0) and (image_snapshot_ticks is not None) and (done or cur_tick % image_snapshot_ticks == 0) and (
                 not detect_anomaly):

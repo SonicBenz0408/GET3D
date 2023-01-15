@@ -95,7 +95,7 @@ class StyleGAN2Loss(Loss):
         # real_c: [[rot, ele, label], ...]
         # gen_c : [label, label, ...]
 
-        # gen_c = gen_c.unsqueeze(1)
+        gen_c = gen_c.unsqueeze(1)
         assert phase in ['Gmain', 'Greg', 'Gboth', 'Dmain', 'Dreg', 'Dboth']
         if self.pl_weight == 0:
             phase = {'Greg': 'none', 'Gboth': 'Gmain'}.get(phase, phase)
@@ -127,13 +127,13 @@ class StyleGAN2Loss(Loss):
                 training_stats.report('Loss/scores/fake', gen_logits)
                 training_stats.report('Loss/signs/fake', gen_logits.sign())
                 loss_Gmain = torch.nn.functional.softplus(-gen_logits).mean()
-                loss_Gmain += torch.nn.functional.cross_entropy(gen_logits_c, gen_c)
+                loss_Gmain += torch.nn.functional.cross_entropy(gen_logits_c, gen_c.squeeze())
                 training_stats.report('Loss/G/loss_rgb', loss_Gmain)
 
                 training_stats.report('Loss/scores/fake_mask', gen_logits_mask)
                 training_stats.report('Loss/signs/fake_mask', gen_logits_mask.sign())
                 loss_Gmask = torch.nn.functional.softplus(-gen_logits_mask).mean()
-                loss_Gmask += torch.nn.functional.cross_entropy(gen_logits_mask_c, gen_c)
+                loss_Gmask += torch.nn.functional.cross_entropy(gen_logits_mask_c, gen_c.squeeze())
                 training_stats.report('Loss/G/loss_mask', loss_Gmask)
                 loss_Gmain += loss_Gmask
                 training_stats.report('Loss/G/loss', loss_Gmain)
@@ -175,14 +175,14 @@ class StyleGAN2Loss(Loss):
                 training_stats.report('Loss/scores/fake', gen_logits)
                 training_stats.report('Loss/signs/fake', gen_logits.sign())
                 loss_Dgen = torch.nn.functional.softplus(gen_logits).mean()  # -log(1 - sigmoid(gen_logits))
-                loss_Dgen += torch.nn.functional.cross_entropy(gen_logits_c, gen_c)
+                loss_Dgen += torch.nn.functional.cross_entropy(gen_logits_c, gen_c.squeeze())
                 training_stats.report('Loss/D/loss_genrgb', loss_Dgen)
 
                 training_stats.report('Loss/scores/fake_mask', gen_logits_mask)
                 training_stats.report('Loss/signs/fake_mask', gen_logits_mask.sign())
                 loss_Dgen_mask = torch.nn.functional.softplus(
                     gen_logits_mask).mean()  # -log(1 - sigmoid(gen_logits))
-                loss_Dgen_mask += torch.nn.functional.cross_entropy(gen_logits_mask_c, gen_c)
+                loss_Dgen_mask += torch.nn.functional.cross_entropy(gen_logits_mask_c, gen_c.squeeze())
                 training_stats.report('Loss/D/loss_gen_mask', loss_Dgen_mask)
                 loss_Dgen += loss_Dgen_mask
 

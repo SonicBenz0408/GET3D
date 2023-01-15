@@ -402,7 +402,7 @@ class MappingNetwork(torch.nn.Module):
         z = torch.randn([n_z, self.z_dim], device=device)
         if cmap_dim is None:
             cmap_dim = 1  #########################
-        c = torch.randint(0, cmap_dim, n_z, device=device)
+        c = torch.randint(0, cmap_dim, [n_z, 1], device=device)
         ws = self.forward(z, c)
         avg_ws = torch.mean(ws, dim=0)[0]
         self.w_avg = self.w_avg * 0.0 + avg_ws
