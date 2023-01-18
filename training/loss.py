@@ -95,7 +95,8 @@ class StyleGAN2Loss(Loss):
         # real_c: [[rot, ele, label], ...]
         # gen_c : [label, label, ...]
 
-        gen_c = gen_c.unsqueeze(1)
+        if gen_c.ndim == 1:
+            gen_c = gen_c.unsqueeze(1)
         assert phase in ['Gmain', 'Greg', 'Gboth', 'Dmain', 'Dreg', 'Dboth']
         if self.pl_weight == 0:
             phase = {'Greg': 'none', 'Gboth': 'Gmain'}.get(phase, phase)
@@ -127,13 +128,16 @@ class StyleGAN2Loss(Loss):
                 training_stats.report('Loss/scores/fake', gen_logits)
                 training_stats.report('Loss/signs/fake', gen_logits.sign())
                 loss_Gmain = torch.nn.functional.softplus(-gen_logits).mean()
-                loss_Gmain += torch.nn.functional.cross_entropy(gen_logits_c, gen_c.squeeze())
+                # loss_Gmain += torch.nn.functional.cross_entropy(gen_logits_c, gen_c.squeeze())
+                loss_Gmain += torch.nn.functional.cosine_embedding_loss(gen_logits_c, gen_c.squeeze(), torch.ones(gen_logits_c.shape[0], device=self.device))
+                # loss_Gmain += torch.nn.functional.mse_loss(gen_logits_c, gen_c.squeeze())
                 training_stats.report('Loss/G/loss_rgb', loss_Gmain)
 
                 training_stats.report('Loss/scores/fake_mask', gen_logits_mask)
                 training_stats.report('Loss/signs/fake_mask', gen_logits_mask.sign())
                 loss_Gmask = torch.nn.functional.softplus(-gen_logits_mask).mean()
-                loss_Gmask += torch.nn.functional.cross_entropy(gen_logits_mask_c, gen_c.squeeze())
+                # loss_Gmask += torch.nn.functional.cross_entropy(gen_logits_mask_c, gen_c.squeeze())
+                # loss_Gmask += torch.nn.functional.cosine_embedding_loss(gen_logits_mask_c, gen_c.squeeze(), torch.ones(gen_logits_mask_c.shape[0], device=self.device))
                 training_stats.report('Loss/G/loss_mask', loss_Gmask)
                 loss_Gmain += loss_Gmask
                 training_stats.report('Loss/G/loss', loss_Gmain)
@@ -175,14 +179,17 @@ class StyleGAN2Loss(Loss):
                 training_stats.report('Loss/scores/fake', gen_logits)
                 training_stats.report('Loss/signs/fake', gen_logits.sign())
                 loss_Dgen = torch.nn.functional.softplus(gen_logits).mean()  # -log(1 - sigmoid(gen_logits))
-                loss_Dgen += torch.nn.functional.cross_entropy(gen_logits_c, gen_c.squeeze())
+                # loss_Dgen += torch.nn.functional.cross_entropy(gen_logits_c, gen_c.squeeze())
+                loss_Dgen += torch.nn.functional.cosine_embedding_loss(gen_logits_c, gen_c.squeeze(), torch.ones(gen_logits_c.shape[0], device=self.device))
+                # loss_Dgen += torch.nn.functional.mse_loss(gen_logits_c, gen_c.squeeze())
                 training_stats.report('Loss/D/loss_genrgb', loss_Dgen)
 
                 training_stats.report('Loss/scores/fake_mask', gen_logits_mask)
                 training_stats.report('Loss/signs/fake_mask', gen_logits_mask.sign())
                 loss_Dgen_mask = torch.nn.functional.softplus(
                     gen_logits_mask).mean()  # -log(1 - sigmoid(gen_logits))
-                loss_Dgen_mask += torch.nn.functional.cross_entropy(gen_logits_mask_c, gen_c.squeeze())
+                # loss_Dgen_mask += torch.nn.functional.cross_entropy(gen_logits_mask_c, gen_c.squeeze())
+                # loss_Dgen_mask += torch.nn.functional.cosine_embedding_loss(gen_logits_mask_c, gen_c.squeeze(), torch.ones(gen_logits_mask_c.shape[0], device=self.device))
                 training_stats.report('Loss/D/loss_gen_mask', loss_Dgen_mask)
                 loss_Dgen += loss_Dgen_mask
 
@@ -196,8 +203,7 @@ class StyleGAN2Loss(Loss):
             with torch.autograd.profiler.record_function(name + '_forward'):
                 # Optimize for the real image
                 real_img_tmp = real_img.detach().requires_grad_(phase in ['Dreg', 'Dboth'])
-
-                real_logits = self.run_D(real_img_tmp, real_c[:, -1], )
+                real_logits = self.run_D(real_img_tmp, real_c[:, 2:], )
                 real_logits, real_logits_c, real_logits_mask, real_logits_mask_c = real_logits
 
                 training_stats.report('Loss/scores/real', real_logits)
@@ -209,12 +215,15 @@ class StyleGAN2Loss(Loss):
                 loss_Dreal = 0
                 if phase in ['Dmain', 'Dboth']:
                     loss_Dreal = torch.nn.functional.softplus(-real_logits).mean()  # -log(sigmoid(real_logits))
-                    loss_Dreal += torch.nn.functional.cross_entropy(real_logits_c, real_c[:, -1].long())
+                    # loss_Dreal += torch.nn.functional.cross_entropy(real_logits_c, real_c[:, -1].long())
+                    loss_Dreal += torch.nn.functional.cosine_embedding_loss(real_logits_c, real_c[:, 2:], torch.ones(real_logits_c.shape[0], device=self.device))
+                    # loss_Dreal += torch.nn.functional.mse_loss(real_logits_c, real_c[:, 2:])
                     training_stats.report('Loss/D/loss_real_rgb', loss_Dreal)
 
                     loss_Dreal_mask = torch.nn.functional.softplus(
                         -real_logits_mask).mean()  # -log(sigmoid(real_logits))
-                    loss_Dreal_mask += torch.nn.functional.cross_entropy(real_logits_mask_c, real_c[:, -1].long())
+                    # loss_Dreal_mask += torch.nn.functional.cross_entropy(real_logits_mask_c, real_c[:, -1].long())
+                    # loss_Dreal_mask += torch.nn.functional.cosine_embedding_loss(real_logits_mask_c, real_c[:, 2:], torch.ones(real_logits_mask_c.shape[0], device=self.device))
                     training_stats.report('Loss/D/loss_real_mask', loss_Dreal_mask)
                     loss_Dreal += loss_Dreal_mask
                     training_stats.report('Loss/D/loss', loss_Dgen + loss_Dreal)

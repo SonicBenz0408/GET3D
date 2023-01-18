@@ -233,7 +233,11 @@ def training_loop(
             save_image_grid(images, os.path.join(run_dir, 'reals.png'), drange=[0, 255], grid_size=grid_size)
         torch.manual_seed(1234)
         grid_z = torch.randn([images.shape[0], G.z_dim], device=device).split(1)  # This one is the latent code for shape generation
-        grid_c = torch.randint(0, D_kwargs['cmap_dim'], [images.shape[0], G.c_dim], device=device).split(1)  # This one is the condition to controll generation of different classes
+        # grid_c = torch.randint(0, D_kwargs['cmap_dim'], [images.shape[0], G.c_dim], device=device).split(1)  # This one is the condition to controll generation of different classes
+        c_to_compute_w_avg = [training_set.get_label(np.random.randint(len(training_set))) for _ in range(100000)]
+        c_to_compute_w_avg = torch.from_numpy(np.stack(c_to_compute_w_avg)).pin_memory().to(device)
+        grid_c = [training_set.get_label(np.random.randint(len(training_set))) for _ in range(images.shape[0])]
+        grid_c = torch.from_numpy(np.stack(grid_c)).pin_memory().to(device).split(1)
 
     if rank == 0:
         print('Initializing logs...')
@@ -281,6 +285,7 @@ def training_loop(
                          range(len(phases) * (batch_size // num_gpus))]
             all_gen_c = torch.from_numpy(np.stack(all_gen_c)).pin_memory().to(device)
             all_gen_c = [phase_gen_c.split(batch_gpu) for phase_gen_c in all_gen_c.split(batch_size // num_gpus)]
+            
         optim_step += 1
         # Execute training phases.
         for phase, phase_gen_z, phase_gen_c in zip(phases, all_gen_z, all_gen_c):
@@ -368,8 +373,6 @@ def training_loop(
                 print()
                 print('Aborting...')
         
-        print(grid_c[0].shape)
-        print(grid_z[0].shape)
         # Save image snapshot.
         if (rank == 0) and (image_snapshot_ticks is not None) and (done or cur_tick % image_snapshot_ticks == 0) and (
                 not detect_anomaly):
@@ -379,7 +382,8 @@ def training_loop(
                     G_ema, grid_z, grid_c, run_dir, cur_nimg, grid_size, cur_tick,
                     image_snapshot_ticks,
                     save_all=(cur_tick % (image_snapshot_ticks * 4) == 0) and training_set.resolution < 512,
-                    cmap_dim=D_kwargs['cmap_dim']
+                    c_to_compute_w_avg=c_to_compute_w_avg,
+                    # cmap_dim=D_kwargs['cmap_dim']
                 )
                 print('==> saved visualization')
 

@@ -15,7 +15,7 @@ from training.sample_camera_distribution import sample_camera, create_camera_fro
 from uni_rep.rep_3d.dmtet import DMTetGeometry
 from uni_rep.camera.perspective_camera import PerspectiveCamera
 from uni_rep.render.neural_render import NeuralRender
-from training.discriminator_architecture import Discriminator, Discriminator_multi
+from training.discriminator_architecture import Discriminator, Discriminator_multi, DiscriminatorCLIP
 from training.geometry_predictor import Conv3DImplicitSynthesisNetwork, TriPlaneTex, \
     MappingNetwork, ToRGBLayer, TriPlaneTexGeo
 
@@ -577,10 +577,10 @@ class GeneratorDMTETMesh(torch.nn.Module):
             z_dim=z_dim, c_dim=c_dim, w_dim=w_dim, num_ws=self.num_ws_geo,
             device=self.synthesis.device, **mapping_kwargs)
             
-    def update_w_avg(self, cmap_dim=None):
+    def update_w_avg(self, c=None, cmap_dim=None):
         # Update the the average latent to compute truncation
-        self.mapping.update_w_avg(self.device, cmap_dim)
-        self.mapping_geo.update_w_avg(self.device, cmap_dim)
+        self.mapping.update_w_avg(self.device, c=c, cmap_dim=cmap_dim)
+        self.mapping_geo.update_w_avg(self.device, c=c, cmap_dim=cmap_dim)
 
     def generate_3d_mesh(
             self, geo_z, tex_z, c, truncation_psi=1, truncation_cutoff=None, update_emas=False,
