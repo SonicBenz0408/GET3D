@@ -368,8 +368,8 @@ def training_loop(
                 print()
                 print('Aborting...')
         
-        print(grid_c[0].shape)
-        print(grid_z[0].shape)
+        #print(grid_c[0].shape)
+        #print(grid_z[0].shape)
         # Save image snapshot.
         if (rank == 0) and (image_snapshot_ticks is not None) and (done or cur_tick % image_snapshot_ticks == 0) and (
                 not detect_anomaly):

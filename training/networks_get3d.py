@@ -41,6 +41,7 @@ class DMTETSynthesisNetwork(torch.nn.Module):
             dmtet_scale=1.8,
             inference_noise_mode='random',
             one_3d_generator=False,
+            use_opengl=True,
             **block_kwargs,  # Arguments for SynthesisBlock.
     ):  #
         assert img_resolution >= 4 and img_resolution & (img_resolution - 1) == 0
@@ -51,6 +52,9 @@ class DMTETSynthesisNetwork(torch.nn.Module):
         self.dmtet_scale = dmtet_scale
         self.deformation_multiplier = deformation_multiplier
         self.geometry_type = geometry_type
+
+        # use OpenGL or not (due to OpenGL installation problem)
+        self.use_opengl = use_opengl
 
         self.data_camera_mode = data_camera_mode
         self.n_freq_posenc_geo = 1
@@ -69,7 +73,7 @@ class DMTETSynthesisNetwork(torch.nn.Module):
         dmtet_camera = PerspectiveCamera(fovy=fovyangle, device=self.device)
 
         # Renderer we used.
-        dmtet_renderer = NeuralRender(device, camera_model=dmtet_camera)
+        dmtet_renderer = NeuralRender(device, camera_model=dmtet_camera, use_opengl=use_opengl)
 
         # Geometry class for DMTet
         self.dmtet_geometry = DMTetGeometry(
@@ -382,7 +386,10 @@ class DMTETSynthesisNetwork(torch.nn.Module):
         all_gb_pose = []
         all_uv_mask = []
         if self.dmtet_geometry.renderer.ctx is None:
-            self.dmtet_geometry.renderer.ctx = dr.RasterizeGLContext(device=self.device)
+            if self.use_opengl:
+                self.dmtet_geometry.renderer.ctx = dr.RasterizeGLContext(device=self.device)
+            else:
+                self.dmtet_geometry.renderer.ctx = dr.RasterizeCudaContext(device=self.device)
         for v, f in zip(mesh_v, mesh_f):
             uvs, mesh_tex_idx, gb_pos, mask = xatlas_uvmap(
                 self.dmtet_geometry.renderer.ctx, v, f, resolution=texture_resolution)
@@ -548,6 +555,7 @@ class GeneratorDMTETMesh(torch.nn.Module):
             img_channels,  # Number of output color channels.
             mapping_kwargs={},  # Arguments for MappingNetwork.
             use_style_mixing=False,  # Whether use stylemixing or not
+            use_opengl=True,
             **synthesis_kwargs,  # Arguments for SynthesisNetpwork.
     ):
         super().__init__()
@@ -558,9 +566,10 @@ class GeneratorDMTETMesh(torch.nn.Module):
         self.img_channels = img_channels
         self.device = synthesis_kwargs['device']
         self.use_style_mixing = use_style_mixing
+        self.use_opengl = use_opengl
 
         self.synthesis = DMTETSynthesisNetwork(
-            w_dim=w_dim, img_resolution=img_resolution, img_channels=self.img_channels,
+            w_dim=w_dim, img_resolution=img_resolution, img_channels=self.img_channels, use_opengl=use_opengl,
             **synthesis_kwargs)
 
         if self.synthesis.one_3d_generator:
@@ -579,8 +588,8 @@ class GeneratorDMTETMesh(torch.nn.Module):
             
     def update_w_avg(self, cmap_dim=None):
         # Update the the average latent to compute truncation
-        self.mapping.update_w_avg(self.device, cmap_dim)
-        self.mapping_geo.update_w_avg(self.device, cmap_dim)
+        self.mapping.update_w_avg(self.device, cmap_dim, self.use_opengl)
+        self.mapping_geo.update_w_avg(self.device, cmap_dim, self.use_opengl)
 
     def generate_3d_mesh(
             self, geo_z, tex_z, c, truncation_psi=1, truncation_cutoff=None, update_emas=False,

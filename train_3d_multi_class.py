@@ -185,6 +185,7 @@ def parse_comma_separated_list(s):
 @click.option('--latent_dim', help='Dimention for latent code', metavar='INT', type=click.IntRange(min=1), default=512)
 @click.option('--geometry_type', help='The type of geometry generator', type=str, default='conv3d', show_default=True)
 @click.option('--render_type', help='Type of renderer we used', metavar='STR', type=click.Choice(['neural_render', 'spherical_gaussian']), default='neural_render', show_default=True)
+@click.option('--use_opengl', help='Use OpenGL or not', metavar='BOOL', type=bool, default=True, show_default=True)
 ### Configs for training loss and discriminator#
 @click.option('--d_architecture', help='The architecture for discriminator', metavar='STR', type=str, default='skip', show_default=True)
 @click.option('--use_pl_length', help='whether we apply path length regularization', metavar='BOOL', type=bool, default=False, show_default=False)  # We didn't use path lenth regularzation to avoid nan error
@@ -272,6 +273,8 @@ def main(**kwargs):
     # c.C_kwargs.data_camera_mode = opts.data_camera_mode
     # c.C_kwargs.add_camera_cond = opts.add_camera_cond
 
+    c.G_kwargs.use_opengl = opts.use_opengl
+    
     c.G_kwargs.c_dim = 1
     c.D_kwargs.c_dim = 0
     c.D_kwargs.cmap_dim = 2  # number of class

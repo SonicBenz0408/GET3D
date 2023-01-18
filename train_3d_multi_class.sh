@@ -1,1 +1,1 @@
-python train_3d_multi_class.py --outdir=./log --data=../data/ShapeNet/render/ --gpus=1 --batch=4 --gamma=80 --dmtet_scale 1.0 --use_shapenet_split 1  --one_3d_generator 1  --fp32 0
+python train_3d_multi_class.py --outdir=./log --data=../data/ShapeNet/render/ --gpus=1 --mbstd-group=1 --batch=2 --batch-gpu=2 --gamma=80 --dmtet_scale 1.0 --use_shapenet_split 1  --one_3d_generator 1  --fp32 0
