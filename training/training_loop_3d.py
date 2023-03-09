@@ -296,6 +296,12 @@ def training_loop(
             # Accumulate gradients.
             phase.opt.zero_grad(set_to_none=False)
             phase.module.requires_grad_(True)
+            
+            try:
+                phase.module.clip_model.requires_grad_(False)
+            except:
+                print(phase)
+
             for real_img, real_c, gen_z, gen_c in zip(phase_real_img, phase_real_c, phase_gen_z, phase_gen_c):
                 loss.accumulate_gradients(
                     phase=phase.name, real_img=real_img, real_c=real_c, gen_z=gen_z, gen_c=gen_c,

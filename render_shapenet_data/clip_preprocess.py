@@ -24,10 +24,7 @@ from sklearn.manifold import TSNE
 import clip
 
 def parse_args():
-    parser = argparse.ArgumentParser(description='Renders given obj file by rotation a camera around it.')
-    parser.add_argument(
-        '--save_folder', type=str, default='./tmp',
-        help='path for saving rendered image')
+    parser = argparse.ArgumentParser(description='Preprocess rendered images into clip image features.')
     parser.add_argument(
         '--dataset_folder', type=str, default='./tmp',
         help='path for downloaded 3d dataset folder')
