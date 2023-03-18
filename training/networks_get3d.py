@@ -15,10 +15,11 @@ from training.sample_camera_distribution import sample_camera, create_camera_fro
 from uni_rep.rep_3d.dmtet import DMTetGeometry
 from uni_rep.camera.perspective_camera import PerspectiveCamera
 from uni_rep.render.neural_render import NeuralRender
-from training.discriminator_architecture import Discriminator
+from training.discriminator_architecture import Discriminator, DiscriminatorCLIP
 from training.geometry_predictor import Conv3DImplicitSynthesisNetwork, TriPlaneTex, \
     MappingNetwork, ToRGBLayer, TriPlaneTexGeo
 
+import clip
 
 @persistence.persistent_class
 class DMTETSynthesisNetwork(torch.nn.Module):
@@ -576,6 +577,16 @@ class GeneratorDMTETMesh(torch.nn.Module):
         self.mapping_geo = MappingNetwork(
             z_dim=z_dim, c_dim=c_dim, w_dim=w_dim, num_ws=self.num_ws_geo,
             device=self.synthesis.device, **mapping_kwargs)
+
+        
+        # Step 3: Set up image encoder
+        self.encoder, self.preprocess = clip.load("ViT-B/32", device=self.synthesis.device)
+
+        # remove ToTensor transform from compose
+        self.preprocess.transforms.pop(3)
+
+        # remove ToRGB transform from compose
+        self.preprocess.transforms.pop(2)
 
     def update_w_avg(self, c=None):
         # Update the the average latent to compute truncation
