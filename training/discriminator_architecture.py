@@ -770,6 +770,7 @@ class DiscriminatorCLIP(torch.nn.Module):
 
         # Step 3: set up clip to check add condition
         self.clip_model, self.clip_preprocess = clip.load("ViT-B/32", device=device)
+        self.clip_model = self.clip_model.to(torch.float32)
         self.clip_model.requires_grad_(False)
 
         # remove ToTensor transform from compose
@@ -835,6 +836,7 @@ class DiscriminatorCLIP(torch.nn.Module):
         x = self.b4(x, img_for_tex, cmap)
 
         # Step3: feed the RGB image into clip image encoder
+        # self.clip_model.requires_grad_(False)
         img_for_tex = img[:, :self.img_channels_drgb, :, :]
         img_for_clip = self.clip_preprocess(img_for_tex)
         clip_feature_x = self.clip_model.encode_image(img_for_clip)

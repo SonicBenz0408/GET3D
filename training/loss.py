@@ -154,7 +154,7 @@ class StyleGAN2Loss(Loss):
             with torch.autograd.profiler.record_function('Dgen_forward'):
                 # First generate the rendered image of generated 3D shapes
                 gen_img, _gen_ws, gen_camera, mask_pyramid, render_return_value, real_img_feature = self.run_G(
-                    gen_z, gen_c, update_emas=True)
+                    real_img, real_c, update_emas=True)
                 if self.G.synthesis.data_camera_mode == 'shapenet_car' or self.G.synthesis.data_camera_mode == 'shapenet_chair' \
                         or self.G.synthesis.data_camera_mode == 'shapenet_motorbike' or self.G.synthesis.data_camera_mode == 'renderpeople' or \
                         self.G.synthesis.data_camera_mode == 'shapenet_plant' or self.G.synthesis.data_camera_mode == 'shapenet_vase' or \
@@ -173,7 +173,7 @@ class StyleGAN2Loss(Loss):
                 training_stats.report('Loss/scores/fake', gen_logits)
                 training_stats.report('Loss/signs/fake', gen_logits.sign())
                 loss_Dgen = torch.nn.functional.softplus(gen_logits).mean()  # -log(1 - sigmoid(gen_logits))
-                loss_Gmain += torch.nn.functional.cosine_embedding_loss(real_img_feature, clip_img_feature, torch.ones(real_img_feature.shape[0], device=self.device))
+                loss_Dgen += torch.nn.functional.cosine_embedding_loss(real_img_feature, clip_img_feature, torch.ones(real_img_feature.shape[0], device=self.device))
                 training_stats.report('Loss/D/loss_genrgb', loss_Dgen)
 
                 training_stats.report('Loss/scores/fake_mask', gen_logits_mask)
@@ -195,7 +195,7 @@ class StyleGAN2Loss(Loss):
                 real_img_tmp = real_img.detach().requires_grad_(phase in ['Dreg', 'Dboth'])
 
                 real_logits = self.run_D(real_img_tmp, real_c, )
-                real_logits, real_logits_mask = real_logits
+                real_logits, real_img_feature, real_logits_mask, _ = real_logits
 
                 training_stats.report('Loss/scores/real', real_logits)
                 training_stats.report('Loss/signs/real', real_logits.sign())

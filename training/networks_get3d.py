@@ -581,7 +581,7 @@ class GeneratorDMTETMesh(torch.nn.Module):
         
         # Step 3: Set up image encoder
         self.encoder, self.preprocess = clip.load("ViT-B/32", device=self.synthesis.device)
-
+        self.encoder = self.encoder.to(torch.float32)
         # remove ToTensor transform from compose
         self.preprocess.transforms.pop(3)
 

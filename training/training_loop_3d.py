@@ -281,9 +281,11 @@ def training_loop(
             
             try:
                 phase.module.clip_model.requires_grad_(False)
-                print("Set clip_model require_grad to False")
+                # print("Set clip_model require_grad to False")
             except:
-                print("Fail to set clip_model require_grad to False")
+                pass
+                # print("Fail to set clip_model require_grad to False")
+
             
             for real_img, real_c in zip(phase_real_img, phase_real_c):
                 loss.accumulate_gradients(
