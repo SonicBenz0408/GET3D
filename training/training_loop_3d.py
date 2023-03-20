@@ -225,7 +225,12 @@ def training_loop(
         if not inference_vis:
             save_image_grid(images, os.path.join(run_dir, 'reals.png'), drange=[0, 255], grid_size=grid_size)
         torch.manual_seed(1234)
-        grid_z = torch.randn([images.shape[0], G.z_dim], device=device).split(1)  # This one is the latent code for shape generation
+        
+        with torch.no_grad():
+            grid_img = torch.cat([torch.from_numpy(training_set[i][0]).unsqueeze(0) for i in torch.randint(0, len(training_set), (images.shape[0], ))])
+            grid_img = (grid_img.to(device).to(torch.float32) / 127.5 - 1)
+            grid_img_pre_processed = G.preprocess(grid_img[:, :3, :, :])
+            grid_z = G.encoder.encode_image(grid_img_pre_processed).split(1)
         grid_c = torch.ones(images.shape[0], device=device).split(1)  # This one is not used, just for the compatiable with the code structure.
 
     if rank == 0:
@@ -280,11 +285,12 @@ def training_loop(
             phase.module.requires_grad_(True)
             
             try:
+                # Freeze G.encoder and D.clip_model
+                phase.module.encoder.requires_grad_(False)
                 phase.module.clip_model.requires_grad_(False)
-                # print("Set clip_model require_grad to False")
             except:
                 pass
-                # print("Fail to set clip_model require_grad to False")
+
 
             
             for real_img, real_c in zip(phase_real_img, phase_real_c):

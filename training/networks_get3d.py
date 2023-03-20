@@ -582,11 +582,15 @@ class GeneratorDMTETMesh(torch.nn.Module):
         # Step 3: Set up image encoder
         self.encoder, self.preprocess = clip.load("ViT-B/32", device=self.synthesis.device)
         self.encoder = self.encoder.to(torch.float32)
+        self.encoder.requires_grad_(False)
+        self.encoder.eval()
+        
         # remove ToTensor transform from compose
         self.preprocess.transforms.pop(3)
-
         # remove ToRGB transform from compose
         self.preprocess.transforms.pop(2)
+
+
 
     def update_w_avg(self, c=None):
         # Update the the average latent to compute truncation
