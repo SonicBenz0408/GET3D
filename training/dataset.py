@@ -13,6 +13,7 @@ import zipfile
 import torch
 import dnnlib
 import cv2
+from pathlib import Path
 
 try:
     import pyspng
@@ -186,6 +187,8 @@ class ImageFolderDataset(Dataset):
                         self.root, len(self._all_fnames)))
                 super().__init__(name=name, raw_shape=self._raw_shape, **super_kwargs)
                 return
+            syn_idx = os.listdir(root)[0]
+            root = Path(root) / syn_idx
             folder_list = sorted(os.listdir(root))
             if data_camera_mode == 'shapenet_chair' or data_camera_mode == 'shapenet_car':
                 if data_camera_mode == 'shapenet_car':
@@ -291,7 +294,7 @@ class ImageFolderDataset(Dataset):
             ori_img = cv2.imread(fname, cv2.IMREAD_UNCHANGED)
             img = ori_img[:, :, :3][..., ::-1]
             mask = ori_img[:, :, 3:4]
-            condinfo = np.zeros(2)
+            condinfo = np.zeros(2 + 512)
             fname_list = fname.split('/')
             img_idx = int(fname_list[-1].split('.')[0])
             obj_idx = fname_list[-2]
@@ -305,8 +308,10 @@ class ImageFolderDataset(Dataset):
                 else:
                     rotation_camera = np.load(os.path.join(self.camera_root, syn_idx, obj_idx, 'rotation.npy'))
                     elevation_camera = np.load(os.path.join(self.camera_root, syn_idx, obj_idx, 'elevation.npy'))
+                    clip_feature = np.load(os.path.join(self.camera_root.parent, 'img', syn_idx, obj_idx, 'clip_feature.npy'))
                     condinfo[0] = rotation_camera[img_idx] / 180 * np.pi
                     condinfo[1] = (90 - elevation_camera[img_idx]) / 180.0 * np.pi
+                    condinfo[2:] = clip_feature[img_idx]
         else:
             raise NotImplementedError
 
@@ -319,6 +324,35 @@ class ImageFolderDataset(Dataset):
         background = np.zeros_like(img)
         img = img * (mask > 0).astype(np.float) + background * (1 - (mask > 0).astype(np.float))
         return np.ascontiguousarray(img), condinfo, np.ascontiguousarray(mask)
+    
+    def get_label(self, idx):
+        fname = self._image_fnames[self._raw_idx[idx]]
+        if self.data_camera_mode == 'shapenet_car' or self.data_camera_mode == 'shapenet_chair' \
+                or self.data_camera_mode == 'renderpeople' \
+                or self.data_camera_mode == 'shapenet_motorbike' or self.data_camera_mode == 'ts_house' or self.data_camera_mode == 'ts_animal' \
+                :
+            condinfo = np.zeros(2 + 512)
+            fname_list = fname.split('/')
+            img_idx = int(fname_list[-1].split('.')[0])
+            obj_idx = fname_list[-2]
+            syn_idx = fname_list[-3]
+
+            if self.data_camera_mode == 'shapenet_car' or self.data_camera_mode == 'shapenet_chair' \
+                    or self.data_camera_mode == 'renderpeople' or self.data_camera_mode == 'shapenet_motorbike' \
+                    or self.data_camera_mode == 'ts_house' or self.data_camera_mode == 'ts_animal':
+                if not os.path.exists(os.path.join(self.camera_root, syn_idx, obj_idx, 'rotation.npy')):
+                    print('==> not found camera root')
+                else:
+                    rotation_camera = np.load(os.path.join(self.camera_root, syn_idx, obj_idx, 'rotation.npy'))
+                    elevation_camera = np.load(os.path.join(self.camera_root, syn_idx, obj_idx, 'elevation.npy'))
+                    clip_feature = np.load(os.path.join(self.camera_root.parent, 'img', syn_idx, obj_idx, 'clip_feature.npy'))
+                    condinfo[0] = rotation_camera[img_idx] / 180 * np.pi
+                    condinfo[1] = (90 - elevation_camera[img_idx]) / 180.0 * np.pi
+                    condinfo[2:] = clip_feature[img_idx]
+        else:
+            raise NotImplementedError
+
+        return condinfo
 
     def _load_raw_image(self, raw_idx):
         if raw_idx >= len(self._image_fnames) or not os.path.exists(self._image_fnames[raw_idx]):
@@ -329,6 +363,86 @@ class ImageFolderDataset(Dataset):
         resize_img = cv2.resize(img, (self.img_size, self.img_size), interpolation=cv2.INTER_LINEAR) / 255.0
         resize_img = resize_img.transpose(2, 0, 1)
         return resize_img
+    
 
     def _load_raw_labels(self):
         return None
+
+class MultiClassImageFolderDataset(Dataset):
+    def __init__(
+            self,
+            path,  # Path to directory or zip.
+            chosen_classes=["car", "chair"],
+            resolution=None,  # Ensure specific resolution, None = highest available.
+            # data_camera_mode='shapenet_car',
+            add_camera_cond=False,
+            split='all',
+            **super_kwargs  # Additional arguments for the Dataset base class.
+    ):
+        
+        # Find sub class root under root folder
+        self._root = Path(path)
+        self._sub_class_roots = os.listdir(self._root)
+        self.condinfos = {}
+        
+        # Extract chosen classes from existing folders and create sub class dataset
+        self._sub_class_datasets = []
+        for (i, class_name) in enumerate(chosen_classes):
+            if class_name in self._sub_class_roots:
+                sub_class_root = self._root / class_name
+                data_camera_mode = f"shapenet_{class_name}"
+                print(data_camera_mode)
+                new_dataset = ImageFolderDataset(
+                    path=sub_class_root / "img",  # Path to directory or zip.
+                    camera_path=sub_class_root / "camera",  # Path to camera
+                    resolution=resolution,  # Ensure specific resolution, None = highest available.
+                    data_camera_mode=data_camera_mode,
+                    add_camera_cond=add_camera_cond,
+                    split=split,
+                    **super_kwargs  # Additional arguments for the Dataset base class.)
+                )
+                self._sub_class_datasets.append(new_dataset)
+            else:
+                raise Exception(f"Folder not found for class {class_name} under {self._root}")
+
+        #
+        self._size = sum([len(d) for d in self._sub_class_datasets])
+        self._labels = np.zeros(self._size, dtype=np.int64)
+        self._sub_class_idx_map = np.zeros(self._size, dtype=np.int64)
+        
+        idx = 0
+        for i, dataset in enumerate(self._sub_class_datasets):
+            self._labels[idx: idx+len(dataset)] = i
+            self._sub_class_idx_map[idx: idx+len(dataset)] = np.arange(0, len(dataset), dtype=np.int64)
+            idx += len(dataset)
+    
+        name = "-".join(chosen_classes)
+        print(
+            '==> use image path: %s, num images: %d' % (self._root, self._size))
+        raw_shape = [self._size] + list(self._sub_class_datasets[0]._load_raw_image(0).shape)
+        
+        print(name)
+        print(raw_shape)
+        super().__init__(name=name, raw_shape=raw_shape, **super_kwargs)
+
+    def __getitem__(self, idx):
+        label = self._labels[idx]
+        sub_class_idx = self._sub_class_idx_map[idx]
+        img, condinfo, mask = self._sub_class_datasets[label][sub_class_idx]
+        condinfo = condinfo[:2]
+        return img, condinfo, mask
+
+    def get_label(self, idx):
+        label = self._labels[idx]
+        sub_class_idx = self._sub_class_idx_map[idx]
+        condinfo = self._sub_class_datasets[label].get_label(sub_class_idx)
+        return condinfo[:2]
+
+    def _load_raw_image(self, raw_idx):  # to be overridden by subclass
+        return
+
+    def _load_raw_labels(self):  # to be overridden by subclass
+        return
+
+    def __len__(self):
+        return self._size

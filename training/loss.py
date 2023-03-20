@@ -46,8 +46,12 @@ class StyleGAN2Loss(Loss):
         self.gamma_mask = gamma_mask
 
     def run_G(
-            self, z, c, update_emas=False, return_shape=False,
+            self, real_img, c, update_emas=False, return_shape=False,
     ):
+        # Encode real image into latent vector z
+        real_img_pre_processed = self.G.preprocess(real_img[:, :3, :, :])
+        z = self.G.encoder.encode_image(real_img_pre_processed)
+
         # Step 1: Map the sampled z code to w-space
         ws = self.G.mapping(z, c, update_emas=update_emas)
         geo_z = torch.randn_like(z)
@@ -77,12 +81,12 @@ class StyleGAN2Loss(Loss):
                 return_shape=return_shape,
                 ws_geo=ws_geo,
             )
-            return img, sdf, ws, syn_camera, deformation, v_deformed, mesh_v, mesh_f, mask_pyramid, ws_geo, sdf_reg_loss, render_return_value
+            return img, sdf, ws, syn_camera, deformation, v_deformed, mesh_v, mesh_f, mask_pyramid, ws_geo, sdf_reg_loss, render_return_value, z
         else:
             img, syn_camera, mask_pyramid, sdf_reg_loss, render_return_value = self.G.synthesis(
                 ws, return_shape=return_shape,
                 ws_geo=ws_geo)
-        return img, ws, syn_camera, mask_pyramid, render_return_value
+        return img, ws, syn_camera, mask_pyramid, render_return_value, z
 
     def run_D(self, img, c, update_emas=False, mask_pyramid=None):
         logits = self.D(img, c, update_emas=update_emas, mask_pyramid=mask_pyramid)
@@ -101,8 +105,8 @@ class StyleGAN2Loss(Loss):
             with torch.autograd.profiler.record_function('Gmain_forward'):
                 # First generate the rendered image of generated 3D shapes
                 gen_img, gen_sdf, _gen_ws, gen_camera, deformation, v_deformed, mesh_v, mesh_f, mask_pyramid, _gen_ws_geo, \
-                sdf_reg_loss, render_return_value = self.run_G(
-                    gen_z, gen_c, return_shape=True
+                sdf_reg_loss, render_return_value, real_img_feature = self.run_G(
+                    real_img=real_img, c=real_c, return_shape=True
                 )
 
                 camera_condition = None
@@ -116,11 +120,12 @@ class StyleGAN2Loss(Loss):
                     assert NotImplementedError
                 # Send to discriminator
                 gen_logits = self.run_D(gen_img, camera_condition, mask_pyramid=mask_pyramid)
-                gen_logits, gen_logits_mask = gen_logits
+                gen_logits, clip_img_feature, gen_logits_mask, _ = gen_logits
 
                 training_stats.report('Loss/scores/fake', gen_logits)
                 training_stats.report('Loss/signs/fake', gen_logits.sign())
                 loss_Gmain = torch.nn.functional.softplus(-gen_logits).mean()
+                loss_Gmain += torch.nn.functional.cosine_embedding_loss(real_img_feature, clip_img_feature, torch.ones(real_img_feature.shape[0], device=self.device))
                 training_stats.report('Loss/G/loss_rgb', loss_Gmain)
 
                 training_stats.report('Loss/scores/fake_mask', gen_logits_mask)
@@ -148,8 +153,8 @@ class StyleGAN2Loss(Loss):
         if phase in ['Dmain', 'Dboth']:
             with torch.autograd.profiler.record_function('Dgen_forward'):
                 # First generate the rendered image of generated 3D shapes
-                gen_img, _gen_ws, gen_camera, mask_pyramid, render_return_value = self.run_G(
-                    gen_z, gen_c, update_emas=True)
+                gen_img, _gen_ws, gen_camera, mask_pyramid, render_return_value, real_img_feature = self.run_G(
+                    real_img, real_c, update_emas=True)
                 if self.G.synthesis.data_camera_mode == 'shapenet_car' or self.G.synthesis.data_camera_mode == 'shapenet_chair' \
                         or self.G.synthesis.data_camera_mode == 'shapenet_motorbike' or self.G.synthesis.data_camera_mode == 'renderpeople' or \
                         self.G.synthesis.data_camera_mode == 'shapenet_plant' or self.G.synthesis.data_camera_mode == 'shapenet_vase' or \
@@ -163,11 +168,12 @@ class StyleGAN2Loss(Loss):
                 gen_logits = self.run_D(
                     gen_img, camera_condition, update_emas=True, mask_pyramid=mask_pyramid)
 
-                gen_logits, gen_logits_mask = gen_logits
+                gen_logits, clip_img_feature, gen_logits_mask, _ = gen_logits
 
                 training_stats.report('Loss/scores/fake', gen_logits)
                 training_stats.report('Loss/signs/fake', gen_logits.sign())
                 loss_Dgen = torch.nn.functional.softplus(gen_logits).mean()  # -log(1 - sigmoid(gen_logits))
+                loss_Dgen += torch.nn.functional.cosine_embedding_loss(real_img_feature, clip_img_feature, torch.ones(real_img_feature.shape[0], device=self.device))
                 training_stats.report('Loss/D/loss_genrgb', loss_Dgen)
 
                 training_stats.report('Loss/scores/fake_mask', gen_logits_mask)
@@ -189,7 +195,7 @@ class StyleGAN2Loss(Loss):
                 real_img_tmp = real_img.detach().requires_grad_(phase in ['Dreg', 'Dboth'])
 
                 real_logits = self.run_D(real_img_tmp, real_c, )
-                real_logits, real_logits_mask = real_logits
+                real_logits, real_img_feature, real_logits_mask, _ = real_logits
 
                 training_stats.report('Loss/scores/real', real_logits)
                 training_stats.report('Loss/signs/real', real_logits.sign())

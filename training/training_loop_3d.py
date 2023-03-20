@@ -225,7 +225,12 @@ def training_loop(
         if not inference_vis:
             save_image_grid(images, os.path.join(run_dir, 'reals.png'), drange=[0, 255], grid_size=grid_size)
         torch.manual_seed(1234)
-        grid_z = torch.randn([images.shape[0], G.z_dim], device=device).split(1)  # This one is the latent code for shape generation
+        
+        with torch.no_grad():
+            grid_img = torch.cat([torch.from_numpy(training_set[i][0]).unsqueeze(0) for i in torch.randint(0, len(training_set), (images.shape[0], ))])
+            grid_img = (grid_img.to(device).to(torch.float32) / 127.5 - 1)
+            grid_img_pre_processed = G.preprocess(grid_img[:, :3, :, :])
+            grid_z = G.encoder.encode_image(grid_img_pre_processed).split(1)
         grid_c = torch.ones(images.shape[0], device=device).split(1)  # This one is not used, just for the compatiable with the code structure.
 
     if rank == 0:
@@ -268,15 +273,9 @@ def training_loop(
             phase_real_img = torch.cat([phase_real_img, real_mask], dim=1)
             phase_real_img = phase_real_img.split(batch_gpu)
             phase_real_c = phase_real_c.to(device).split(batch_gpu)
-            all_gen_z = torch.randn([len(phases) * (batch_size // num_gpus), G.z_dim], device=device)
-            all_gen_z = [phase_gen_z.split(batch_gpu) for phase_gen_z in all_gen_z.split((batch_size // num_gpus))]
-            all_gen_c = [training_set.get_label(np.random.randint(len(training_set))) for _ in
-                         range(len(phases) * (batch_size // num_gpus))]
-            all_gen_c = torch.from_numpy(np.stack(all_gen_c)).pin_memory().to(device)
-            all_gen_c = [phase_gen_c.split(batch_gpu) for phase_gen_c in all_gen_c.split(batch_size // num_gpus)]
         optim_step += 1
         # Execute training phases.
-        for phase, phase_gen_z, phase_gen_c in zip(phases, all_gen_z, all_gen_c):
+        for phase in phases:
             if batch_idx % phase.interval != 0:
                 continue
             if phase.start_event is not None:
@@ -284,11 +283,23 @@ def training_loop(
             # Accumulate gradients.
             phase.opt.zero_grad(set_to_none=False)
             phase.module.requires_grad_(True)
-            for real_img, real_c, gen_z, gen_c in zip(phase_real_img, phase_real_c, phase_gen_z, phase_gen_c):
+            
+            try:
+                # Freeze G.encoder and D.clip_model
+                phase.module.encoder.requires_grad_(False)
+                phase.module.clip_model.requires_grad_(False)
+            except:
+                pass
+
+
+            
+            for real_img, real_c in zip(phase_real_img, phase_real_c):
                 loss.accumulate_gradients(
-                    phase=phase.name, real_img=real_img, real_c=real_c, gen_z=gen_z, gen_c=gen_c,
+                    phase=phase.name, real_img=real_img, real_c=real_c, gen_z=None, gen_c=None,
                     gain=phase.interval, cur_nimg=cur_nimg)
             phase.module.requires_grad_(False)
+
+
 
             # Update weights.
             with torch.autograd.profiler.record_function(phase.name + '_opt'):
