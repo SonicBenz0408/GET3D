@@ -340,7 +340,7 @@ class MultiClassImageFolderDataset(Dataset):
     def __init__(
             self,
             path,  # Path to directory or zip.
-            chosen_classes=["motorbike", "chair"],
+            chosen_classes=["chair"],
             resolution=None,  # Ensure specific resolution, None = highest available.
             # data_camera_mode='shapenet_car',
             add_camera_cond=False,
@@ -396,7 +396,7 @@ class MultiClassImageFolderDataset(Dataset):
         label = self._labels[idx]
         sub_class_idx = self._sub_class_idx_map[idx]
         img, condinfo, mask = self._sub_class_datasets[label][sub_class_idx]
-        condinfo = np.append(condinfo, label)
+        # condinfo = np.append(condinfo, label)
         # print(img.shape)
         # print(condinfo.shape)
         # print(mask.shape)

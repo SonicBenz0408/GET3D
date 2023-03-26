@@ -63,7 +63,7 @@ def inference(
 
 
     common_kwargs = dict(
-        img_resolution=training_set_kwargs['resolution'] if 'resolution' in training_set_kwargs else 1024, img_channels=3)
+        c_dim=0, img_resolution=training_set_kwargs['resolution'] if 'resolution' in training_set_kwargs else 1024, img_channels=3)
     G_kwargs['device'] = device
 
     G = dnnlib.util.construct_class_by_name(**G_kwargs, **common_kwargs).train().requires_grad_(False).to(
@@ -81,21 +81,20 @@ def inference(
     n_shape = grid_size[0] * grid_size[1]
     grid_z = torch.randn([n_shape, G.z_dim], device=device).split(1)  # random code for geometry
     grid_tex_z = torch.randn([n_shape, G.z_dim], device=device).split(1)  # random code for texture
-    grid_c = torch.randint(0, D_kwargs['cmap_dim'], n_shape, device=device).split(1)
+    grid_c = torch.ones(n_shape, device=device).split(1)
 
     print('==> generate ')
     save_visualization(
         G_ema, grid_z, grid_c, run_dir, 0, grid_size, 0,
         save_all=False,
-        grid_tex_z=grid_tex_z,
-        cmap_dim=D_kwargs['cmap_dim']
+        grid_tex_z=grid_tex_z
     )
 
     if inference_to_generate_textured_mesh:
         print('==> generate inference 3d shapes with texture')
         save_textured_mesh_for_inference(
             G_ema, grid_z, grid_c, run_dir, save_mesh_dir='texture_mesh_for_inference',
-            c_to_compute_w_avg=None, grid_tex_z=grid_tex_z, cmap_dim=D_kwargs['cmap_dim'])
+            c_to_compute_w_avg=None, grid_tex_z=grid_tex_z)
 
     if inference_save_interpolation:
         print('==> generate interpolation results')

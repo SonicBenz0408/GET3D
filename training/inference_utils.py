@@ -147,7 +147,6 @@ def save_visualization_for_interpolation(
 def save_visualization(
         G_ema, grid_z, grid_c, run_dir, cur_nimg, grid_size, cur_tick,
         image_snapshot_ticks=50,
-        cmap_dim=None,
         save_gif_name=None,
         save_all=True,
         grid_tex_z=None,
@@ -168,7 +167,7 @@ def save_visualization(
     :return:
     '''
     with torch.no_grad():
-        G_ema.update_w_avg(cmap_dim=cmap_dim)
+        G_ema.update_w_avg()
         camera_list = G_ema.synthesis.generate_rotate_camera_list(n_batch=grid_z[0].shape[0])
         camera_img_list = []
         if not save_all:
@@ -215,7 +214,7 @@ def save_visualization(
 
 def save_textured_mesh_for_inference(
         G_ema, grid_z, grid_c, run_dir, save_mesh_dir=None,
-        cmap_dim=None, grid_tex_z=None, use_style_mixing=False):
+        c_to_compute_w_avg=None, grid_tex_z=None, use_style_mixing=False):
     '''
     Generate texture mesh for generation
     :param G_ema: GET3D generator
@@ -229,19 +228,18 @@ def save_textured_mesh_for_inference(
     :return:
     '''
     with torch.no_grad():
-        G_ema.update_w_avg(cmap_dim=cmap_dim)
+        G_ema.update_w_avg(c_to_compute_w_avg)
         save_mesh_idx = 0
         mesh_dir = os.path.join(run_dir, save_mesh_dir)
         os.makedirs(mesh_dir, exist_ok=True)
         for idx in range(len(grid_z)):
             geo_z = grid_z[idx]
-            c = grid_c[idx]
             if grid_tex_z is None:
                 tex_z = grid_z[idx]
             else:
                 tex_z = grid_tex_z[idx]
             generated_mesh = G_ema.generate_3d_mesh(
-                geo_z=geo_z, tex_z=tex_z, c=c, truncation_psi=0.7,
+                geo_z=geo_z, tex_z=tex_z, c=None, truncation_psi=0.7,
                 use_style_mixing=use_style_mixing)
             for mesh_v, mesh_f, all_uvs, all_mesh_tex_idx, tex_map in zip(*generated_mesh):
                 savemeshtes2(

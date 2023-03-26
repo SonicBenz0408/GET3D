@@ -82,10 +82,8 @@ def training_loop(
         data_loader_kwargs={},  # Options for torch.utils.data.DataLoader.
         G_kwargs={},  # Options for generator network.
         D_kwargs={},  # Options for discriminator network.
-        C_kwargs={},  # Options for classifier network.
         G_opt_kwargs={},  # Options for generator optimizer.
         D_opt_kwargs={},  # Options for discriminator optimizer.
-        C_opt_kwargs={},  # Options for classifier optimizer.
         loss_kwargs={},  # Options for loss function.
         metrics=[],  # Metrics to evaluate during training.
         random_seed=0,  # Global random seed.
@@ -151,10 +149,10 @@ def training_loop(
         print('Constructing networks...')
 
     # Constructing networks
-    # common_kwargs = dict(
-    #     c_dim=training_set.label_dim, img_resolution=training_set.resolution, img_channels=training_set.num_channels)
     common_kwargs = dict(
-        img_resolution=training_set.resolution, img_channels=training_set.num_channels)
+        c_dim=training_set.label_dim, img_resolution=training_set.resolution, img_channels=training_set.num_channels)
+    # common_kwargs = dict(
+    #     img_resolution=training_set.resolution, img_channels=training_set.num_channels)
     G_kwargs['device'] = device
     D_kwargs['device'] = device
     #C_kwargs['device'] = device
@@ -233,7 +231,8 @@ def training_loop(
             save_image_grid(images, os.path.join(run_dir, 'reals.png'), drange=[0, 255], grid_size=grid_size)
         torch.manual_seed(1234)
         grid_z = torch.randn([images.shape[0], G.z_dim], device=device).split(1)  # This one is the latent code for shape generation
-        grid_c = torch.randint(0, D_kwargs['cmap_dim'], [images.shape[0], G.c_dim], device=device).split(1)  # This one is the condition to controll generation of different classes
+        grid_c = torch.ones(images.shape[0], device=device).split(1)  # This one is not used, just for the compatiable with the code structure.
+
 
     if rank == 0:
         print('Initializing logs...')
@@ -379,7 +378,6 @@ def training_loop(
                     G_ema, grid_z, grid_c, run_dir, cur_nimg, grid_size, cur_tick,
                     image_snapshot_ticks,
                     save_all=(cur_tick % (image_snapshot_ticks * 4) == 0) and training_set.resolution < 512,
-                    cmap_dim=D_kwargs['cmap_dim']
                 )
                 print('==> saved visualization')
 

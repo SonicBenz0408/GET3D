@@ -110,12 +110,12 @@ def init_dataset_kwargs(data, opt=None):
     try:
         if opt.use_shapenet_split:
             dataset_kwargs = dnnlib.EasyDict(
-                class_name='training.dataset.ImageFolderDataset',
+                class_name='training.dataset.MultiClassImageFolderDataset',
                 path=data, use_labels=True, max_size=None, xflip=False,
                 resolution=opt.img_res,
-                data_camera_mode=opt.data_camera_mode,
+                # data_camera_mode=opt.data_camera_mode,
                 add_camera_cond=opt.add_camera_cond,
-                camera_path=opt.camera_path,
+                # camera_path=opt.camera_path,
                 split='test' if opt.inference_vis else 'train',
             )
         else:
@@ -127,7 +127,7 @@ def init_dataset_kwargs(data, opt=None):
                 camera_path=opt.camera_path,
             )
         dataset_obj = dnnlib.util.construct_class_by_name(**dataset_kwargs)  # Subclass of training.dataset.Dataset.
-        dataset_kwargs.camera_path = opt.camera_path
+        # dataset_kwargs.camera_path = opt.camera_path
         dataset_kwargs.resolution = dataset_obj.resolution  # Be explicit about resolution.
         dataset_kwargs.use_labels = dataset_obj.has_labels  # Be explicit about labels.
         dataset_kwargs.max_size = len(dataset_obj)  # Be explicit about dataset size.
@@ -185,6 +185,7 @@ def parse_comma_separated_list(s):
 @click.option('--latent_dim', help='Dimention for latent code', metavar='INT', type=click.IntRange(min=1), default=512)
 @click.option('--geometry_type', help='The type of geometry generator', type=str, default='conv3d', show_default=True)
 @click.option('--render_type', help='Type of renderer we used', metavar='STR', type=click.Choice(['neural_render', 'spherical_gaussian']), default='neural_render', show_default=True)
+@click.option('--use_opengl', help='Use OpenGL or not', metavar='BOOL', type=bool, default=True, show_default=True)
 ### Configs for training loss and discriminator#
 @click.option('--d_architecture', help='The architecture for discriminator', metavar='STR', type=str, default='skip', show_default=True)
 @click.option('--use_pl_length', help='whether we apply path length regularization', metavar='BOOL', type=bool, default=False, show_default=False)  # We didn't use path lenth regularzation to avoid nan error
@@ -271,10 +272,7 @@ def main(**kwargs):
     c.D_kwargs.add_camera_cond = opts.add_camera_cond
     # c.C_kwargs.data_camera_mode = opts.data_camera_mode
     # c.C_kwargs.add_camera_cond = opts.add_camera_cond
-
-    c.G_kwargs.c_dim = 1
-    c.D_kwargs.c_dim = 0
-    c.D_kwargs.cmap_dim = 2  # number of class
+    c.G_kwargs.use_opengl = opts.use_opengl
 
     c.G_kwargs.tet_res = opts.tet_res
 
@@ -307,7 +305,7 @@ def main(**kwargs):
     c.image_snapshot_ticks = c.network_snapshot_ticks = opts.snap
     c.random_seed = c.training_set_kwargs.random_seed = opts.seed
     c.data_loader_kwargs.num_workers = opts.workers
-    c.network_snapshot_ticks = 200
+    c.network_snapshot_ticks = 50
     # Sanity checks.
     if c.batch_size % c.num_gpus != 0:
         raise click.ClickException('--batch must be a multiple of --gpus')
