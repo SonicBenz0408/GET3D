@@ -465,9 +465,8 @@ class Unet1D_cond(nn.Module):
         self.final_conv = nn.Conv1d(dim, self.out_dim, 1)
 
     def forward(self, x, time, cond=None):
-        if cond:
-            cond = default(cond, lambda: torch.zeros((x.shape[0], self.cond_ch, x.shape[2])))
-            x = torch.cat((x, cond), dim=1)
+        cond = default(cond, lambda: torch.zeros((x.shape[0], self.cond_ch, x.shape[2]), device=x.device))
+        x = torch.cat((x, cond), dim=1)
 
         x = self.init_conv(x)
         r = x.clone()
@@ -860,7 +859,6 @@ class GaussianDiffusion1D_cond(nn.Module):
         super().__init__()
         self.model = model
         self.channels = self.model.channels
-        self.self_condition = self.model.self_condition
 
         self.seq_length = seq_length
 
@@ -972,8 +970,8 @@ class GaussianDiffusion1D_cond(nn.Module):
         posterior_log_variance_clipped = extract(self.posterior_log_variance_clipped, t, x_t.shape)
         return posterior_mean, posterior_variance, posterior_log_variance_clipped
 
-    def model_predictions(self, x, t, x_self_cond = None, clip_x_start = False, rederive_pred_noise = False):
-        model_output = self.model(x, t, x_self_cond)
+    def model_predictions(self, x, t, cond, clip_x_start = False, rederive_pred_noise = False):
+        model_output = self.model(x, t, cond)
         maybe_clip = partial(torch.clamp, min = -1., max = 1.) if clip_x_start else identity
 
         if self.objective == 'pred_noise':
@@ -997,8 +995,8 @@ class GaussianDiffusion1D_cond(nn.Module):
 
         return ModelPrediction(pred_noise, x_start)
 
-    def p_mean_variance(self, x, t, x_self_cond = None, clip_denoised = True):
-        preds = self.model_predictions(x, t, x_self_cond)
+    def p_mean_variance(self, x, cond, t, clip_denoised = True):
+        preds = self.model_predictions(x, t, cond)
         x_start = preds.pred_x_start
 
         if clip_denoised:
@@ -1008,16 +1006,16 @@ class GaussianDiffusion1D_cond(nn.Module):
         return model_mean, posterior_variance, posterior_log_variance, x_start
 
     @torch.no_grad()
-    def p_sample(self, x, t: int, x_self_cond = None, clip_denoised = True):
+    def p_sample(self, x, cond, t: int, clip_denoised = True):
         b, *_, device = *x.shape, x.device
         batched_times = torch.full((b,), t, device = x.device, dtype = torch.long)
-        model_mean, _, model_log_variance, x_start = self.p_mean_variance(x = x, t = batched_times, x_self_cond = x_self_cond, clip_denoised = clip_denoised)
+        model_mean, _, model_log_variance, x_start = self.p_mean_variance(x = x, cond = cond, t = batched_times, clip_denoised = clip_denoised)
         noise = torch.randn_like(x) if t > 0 else 0. # no noise if t == 0
         pred_img = model_mean + (0.5 * model_log_variance).exp() * noise
         return pred_img, x_start
 
     @torch.no_grad()
-    def p_sample_loop(self, shape):
+    def p_sample_loop(self, cond, shape):
         batch, device = shape[0], self.betas.device
 
         img = torch.randn(shape, device=device)
@@ -1025,8 +1023,7 @@ class GaussianDiffusion1D_cond(nn.Module):
         x_start = None
 
         for t in tqdm(reversed(range(0, self.num_timesteps)), desc = 'sampling loop time step', total = self.num_timesteps):
-            self_cond = x_start if self.self_condition else None
-            img, x_start = self.p_sample(img, t, self_cond)
+            img, x_start = self.p_sample(img, cond, t)
 
         img = self.unnormalize(img)
         return img
@@ -1110,7 +1107,7 @@ class GaussianDiffusion1D_cond(nn.Module):
         else:
             raise ValueError(f'invalid loss type {self.loss_type}')
 
-    def p_losses(self, x_start, t, noise = None):
+    def p_losses(self, x_start, cond, t, noise = None):
         b, c, n = x_start.shape
         noise = default(noise, lambda: torch.randn_like(x_start))
 
@@ -1118,19 +1115,17 @@ class GaussianDiffusion1D_cond(nn.Module):
 
         x = self.q_sample(x_start = x_start, t = t, noise = noise)
 
-        # if doing self-conditioning, 50% of the time, predict x_start from current set of times
+        # if doing conditioning, 50% of the time, predict x_start from current set of times
         # and condition with unet with that
         # this technique will slow down training by 25%, but seems to lower FID significantly
 
-        x_self_cond = None
-        if self.self_condition and random() < 0.5:
+        if random() < 0.5:
             with torch.no_grad():
-                x_self_cond = self.model_predictions(x, t).pred_x_start
-                x_self_cond.detach_()
+                cond = None
 
         # predict and take gradient step
 
-        model_out = self.model(x, t, x_self_cond)
+        model_out = self.model(x, t, cond)
 
         if self.objective == 'pred_noise':
             target = noise
@@ -1148,10 +1143,10 @@ class GaussianDiffusion1D_cond(nn.Module):
         loss = loss * extract(self.loss_weight, t, loss.shape)
         return loss.mean()
 
-    def forward(self, img, *args, **kwargs):
+    def forward(self, img, cond, *args, **kwargs):
         b, c, n, device, seq_length, = *img.shape, img.device, self.seq_length
         assert n == seq_length, f'seq length must be {seq_length}'
         t = torch.randint(0, self.num_timesteps, (b,), device=device).long()
 
         img = self.normalize(img)
-        return self.p_losses(img, t, *args, **kwargs)
+        return self.p_losses(img, cond, t, *args, **kwargs)

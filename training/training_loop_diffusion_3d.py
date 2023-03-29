@@ -127,9 +127,9 @@ def training_loop(
     tensor_to_img = transforms.ToPILImage()
 
     # create two diffusion model
-    geo_Unet = Unet1D_cond(dim=diff_ch, dim_mults=(1, 2, 4, 8), channels=1, cond_ch=1).to(device)
+    geo_Unet = Unet1D_cond(dim=diff_ch, dim_mults=(1, 2, 4, 8), channels=1, cond_ch=1, resnet_block_groups=2).to(device)
     geo_diffusion_model = GaussianDiffusion1D_cond(geo_Unet, seq_length=G_kwargs.w_dim, timesteps=1000, objective='pred_v').to(device)
-    tex_Unet = Unet1D_cond(dim=diff_ch, dim_mults=(1, 2, 4, 8), channels=1, cond_ch=2).to(device)
+    tex_Unet = Unet1D_cond(dim=diff_ch, dim_mults=(1, 2, 4, 8), channels=2, cond_ch=2, resnet_block_groups=2).to(device)
     tex_diffusion_model = GaussianDiffusion1D_cond(tex_Unet, seq_length=G_kwargs.w_dim, timesteps=1000, objective='pred_v').to(device)
 
     if rank == 0:
@@ -156,14 +156,14 @@ def training_loop(
 
     accelerator.native_amp = amp
 
-    #geo_diffusion_model, geo_diffusion_opt = accelerator.prepare(geo_diffusion_model, geo_diffusion_opt)
-    #tex_diffusion_model, tex_diffusion_opt = accelerator.prepare(tex_diffusion_model, tex_diffusion_opt)
+    geo_diffusion_model, geo_diffusion_opt = accelerator.prepare(geo_diffusion_model, geo_diffusion_opt)
+    tex_diffusion_model, tex_diffusion_opt = accelerator.prepare(tex_diffusion_model, tex_diffusion_opt)
 
     #if accelerator.is_main_process:
-    #ema_geo_diffusion_model = EMA(geo_diffusion_model, beta=ema_decay, update_every=ema_update_every)
-    #ema_tex_diffusion_model = EMA(tex_diffusion_model, beta=ema_decay, update_every=ema_update_every)
-    #ema_geo_diffusion_model.to(device)
-    #ema_tex_diffusion_model.to(device)
+    ema_geo_diffusion_model = EMA(geo_diffusion_model, beta=ema_decay, update_every=ema_update_every)
+    ema_tex_diffusion_model = EMA(tex_diffusion_model, beta=ema_decay, update_every=ema_update_every)
+    ema_geo_diffusion_model.to(device)
+    ema_tex_diffusion_model.to(device)
 
     grid_size = None
     grid_z = None
@@ -216,7 +216,8 @@ def training_loop(
             preprocess_img = torch.stack(preprocess_img)
 
             # training data
-            ws_tex, ws_geo, preprocess_img = ws_tex[:, 0].detach().to(device), ws_geo[:, 0].detach().to(device), preprocess_img.detach().to(device)
+            ws_tex, ws_geo, preprocess_img = ws_tex[:, 0].unsqueeze(1).detach().to(device), ws_geo[:, 0].unsqueeze(1).detach().to(device), preprocess_img.detach().to(device)
+            ws_tex = ws_tex.repeat(1, 2, 1)
 
             clip_c = clip_model.encode_image(preprocess_img)
             geo_cond = clip_c.unsqueeze(1)
@@ -224,20 +225,20 @@ def training_loop(
 
             total_loss = 0.
 
-            # with accelerator.autocast():
-            geo_loss = geo_diffusion_model(ws_geo, geo_cond)
-            tex_loss = tex_diffusion_model(ws_tex, tex_cond)
-            loss = geo_loss + tex_loss
-            total_loss += geo_loss.item()
+            with accelerator.autocast():
+                geo_loss = geo_diffusion_model(ws_geo, geo_cond)
+                tex_loss = tex_diffusion_model(ws_tex, tex_cond)
+                loss = geo_loss + tex_loss
+                total_loss += loss.item()
 
-            #accelerator.backward(loss)
-            loss.backward()
+            accelerator.backward(loss)
+            # loss.backward()
 
-            #accelerator.clip_grad_norm_(geo_diffusion_model.parameters(), 1.0)
-            #accelerator.clip_grad_norm_(tex_diffusion_model.parameters(), 1.0)
+            accelerator.clip_grad_norm_(geo_diffusion_model.parameters(), 1.0)
+            accelerator.clip_grad_norm_(tex_diffusion_model.parameters(), 1.0)
             pbar.set_description(f'loss: {total_loss:.4f}')
 
-            #accelerator.wait_for_everyone()
+            accelerator.wait_for_everyone()
 
             geo_diffusion_opt.step()
             tex_diffusion_opt.step()
@@ -247,18 +248,21 @@ def training_loop(
             accelerator.wait_for_everyone()
 
             step += 1
-            # if accelerator.is_main_process:
-            #     ema_geo_diffusion_model.update()
-            #     ema_tex_diffusion_model.update()
+            if accelerator.is_main_process:
+                ema_geo_diffusion_model.update()
+                ema_tex_diffusion_model.update()
 
                 # if step != 0 and step % save_and_sample_every == 0:
                 #     ema_geo_diffusion_model.ema_model.eval()
                 #     ema_tex_diffusion_model.ema_model.eval()
 
             if step % network_snapshot_ticks == 0:
-                snapshot_data = dict(geo_diff=geo_diffusion_model, tex_diff=tex_diffusion_model)
+                #snapshot_data = dict(geo_diff=geo_diffusion_model, tex_diff=tex_diffusion_model)
+                snapshot_data = dict(geo_diff=geo_diffusion_model, tex_diff=tex_diffusion_model,
+                                     ema_geo_diff=ema_geo_diffusion_model, ema_tex_diff=ema_tex_diffusion_model)
                 snapshot_pkl = os.path.join(run_dir, f'diffusion-network-snapshot-{step}.pkl')
-                all_model_dict = {'geo_diff': snapshot_data['geo_diff'].state_dict(), 'tex_diff': snapshot_data['tex_diff'].state_dict()}
+                all_model_dict = {'geo_diff': snapshot_data['geo_diff'].state_dict(), 'tex_diff': snapshot_data['tex_diff'].state_dict(),
+                                  'ema_geo_diff': snapshot_data['ema_geo_diff'].state_dict(), 'ema_tex_diff': snapshot_data['ema_tex_diff'].state_dict()}
                 torch.save(all_model_dict, snapshot_pkl.replace('.pkl', '.pt'))
 
             pbar.update(1)
