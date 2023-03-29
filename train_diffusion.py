@@ -232,7 +232,7 @@ def main(**kwargs):
 
     c.train_num_steps = opts.num_steps
     c.image_snapshot_ticks = c.network_snapshot_ticks = opts.snap
-    c.network_snapshot_ticks = 50
+    c.network_snapshot_ticks = 5000
     # Sanity checks.
     if c.batch_size % c.num_gpus != 0:
         raise click.ClickException('--batch must be a multiple of --gpus')
