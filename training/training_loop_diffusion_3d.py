@@ -174,7 +174,7 @@ def training_loop(
         grid_size = setup_snapshot_image_grid(img_res=img_res, inference=inference_vis)
 
         torch.manual_seed(1234)
-        grid_z = torch.randn([grid_size[0] * grid_size[1], G_ema.z_dim], device=device).split(1)  # This one is the latent code for shape generation
+        grid_z = torch.randn([grid_size[0] * grid_size[1], G_ema.w_dim], device=device).split(1)  # This one is the latent code for shape generation
         grid_c = torch.ones(grid_size[0] * grid_size[1], device=device).split(1)  # This one is not used, just for the compatiable with the code structure.
 
 

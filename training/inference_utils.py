@@ -212,6 +212,75 @@ def save_visualization(
             save_3d_shape(mesh_v_list[:n_shape], mesh_f_list[:n_shape], run_dir, cur_nimg // 100)
 
 
+def save_visualization_with_cond(
+        G_ema, geo_diff, tex_diff, condition, grid_z, grid_c, run_dir, cur_nimg, grid_size, cur_tick,
+        image_snapshot_ticks=50,
+        save_gif_name=None,
+        save_all=True,
+        grid_tex_z=None,
+):
+    '''
+    Save visualization during training
+    :param G_ema: GET3D generator
+    :param grid_z: latent code for geometry latent code
+    :param grid_c: None
+    :param run_dir: path to save images
+    :param cur_nimg: current k images during training
+    :param grid_size: size of the image
+    :param cur_tick: current kicks for training
+    :param image_snapshot_ticks: current snapshot ticks
+    :param save_gif_name: the name to save if we want to export gif
+    :param save_all:  whether we want to save gif or not
+    :param grid_tex_z: the latent code for texture geenration
+    :return:
+    '''
+    with torch.no_grad():
+        G_ema.update_w_avg()
+        camera_list = G_ema.synthesis.generate_rotate_camera_list(n_batch=grid_z[0].shape[0])
+        camera_img_list = []
+        if not save_all:
+            camera_list = [camera_list[4]]  # we only save one camera for this
+        if grid_tex_z is None:
+            grid_tex_z = grid_z
+        for i_camera, camera in enumerate(camera_list):
+            images_list = []
+            mesh_v_list = []
+            mesh_f_list = []
+            for z, geo_z, c, cond in zip(grid_tex_z, grid_z, grid_c, condition):
+                ws_geo = geo_diff.sample(cond, 1)
+                ws_tex = tex_diff.sample(torch.cat([ws_geo, cond], 1), 1)[:, 0, :]
+                img, mask, sdf, deformation, v_deformed, mesh_v, mesh_f, gen_camera, tex_hard_mask = G_ema.generate_3d_from_latent(
+                    ws_geo, ws_tex, camera=camera)
+                rgb_img = img[:, :3]
+                save_img = torch.cat([rgb_img, mask.permute(0, 3, 1, 2).expand(-1, 3, -1, -1)], dim=-1).detach()
+                images_list.append(save_img.cpu().numpy())
+                mesh_v_list.extend([v.data.cpu().numpy() for v in mesh_v])
+                mesh_f_list.extend([f.data.cpu().numpy() for f in mesh_f])
+            images = np.concatenate(images_list, axis=0)
+            if save_gif_name is None:
+                save_file_name = 'fakes'
+            else:
+                save_file_name = 'fakes_%s' % (save_gif_name.split('.')[0])
+            if save_all:
+                img = save_image_grid(
+                    images, None,
+                    drange=[-1, 1], grid_size=grid_size)
+            else:
+                img = save_image_grid(
+                    images, os.path.join(
+                        run_dir,
+                        f'{save_file_name}_{cur_nimg // 1000:06d}_{i_camera:02d}.png'),
+                    drange=[-1, 1], grid_size=grid_size)
+            camera_img_list.append(img)
+        if save_gif_name is None:
+            save_gif_name = f'fakes_{cur_nimg // 1000:06d}.gif'
+        if save_all:
+            imageio.mimsave(os.path.join(run_dir, save_gif_name), camera_img_list)
+        n_shape = 10  # we only save 10 shapes to check performance
+        if cur_tick % min((image_snapshot_ticks * 20), 100) == 0:
+            save_3d_shape(mesh_v_list[:n_shape], mesh_f_list[:n_shape], run_dir, cur_nimg // 100)
+
+
 def save_textured_mesh_for_inference(
         G_ema, grid_z, grid_c, run_dir, save_mesh_dir=None,
         c_to_compute_w_avg=None, grid_tex_z=None, use_style_mixing=False):

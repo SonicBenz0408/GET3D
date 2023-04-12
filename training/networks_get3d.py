@@ -709,6 +709,21 @@ class GeneratorDMTETMesh(torch.nn.Module):
             **synthesis_kwargs)
         return img, ws, ws_geo
 
+    def generate_3d_from_latent(
+            self, ws_geo, ws_tex, camera=None,
+            generate_no_light=False,
+            **synthesis_kwargs):
+        ws_geo = ws_geo.repeat(1, self.synthesis.generator.num_ws_geo, 1)
+        ws_tex = ws_tex.repeat(1, self.synthesis.generator.num_ws_tex, 1)
+        img, mask, sdf, deformation, v_deformed, mesh_v, mesh_f, gen_camera, img_wo_light, mask_pyramid, tex_hard_mask, \
+        sdf_reg_loss, render_return_value = self.synthesis.generate(
+            ws_tex, camera=camera,
+            ws_geo=ws_geo,
+            **synthesis_kwargs)
+        if generate_no_light:
+            return img, mask, sdf, deformation, v_deformed, mesh_v, mesh_f, gen_camera, img_wo_light, tex_hard_mask
+        return img, mask, sdf, deformation, v_deformed, mesh_v, mesh_f, gen_camera, tex_hard_mask
+
     def forward(
             self, z=None, c=None, truncation_psi=1, truncation_cutoff=None, update_emas=False, use_style_mixing=False,
             geo_z=None,
