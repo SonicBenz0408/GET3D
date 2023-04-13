@@ -247,8 +247,8 @@ def save_visualization_with_cond(
             mesh_v_list = []
             mesh_f_list = []
             for z, geo_z, c, cond in zip(grid_tex_z, grid_z, grid_c, condition):
-                ws_geo = geo_diff.sample(cond, 1)
-                ws_tex = tex_diff.sample(torch.cat([ws_geo, cond], 1), 1)[:, 0, :]
+                ws_geo = geo_diff.sample(cond, 1, z=geo_z)
+                ws_tex = tex_diff.sample(torch.cat([ws_geo, cond], 1), 1, z=z)[:, 0, :]
                 img, mask, sdf, deformation, v_deformed, mesh_v, mesh_f, gen_camera, tex_hard_mask = G_ema.generate_3d_from_latent(
                     ws_geo, ws_tex, camera=camera)
                 rgb_img = img[:, :3]
