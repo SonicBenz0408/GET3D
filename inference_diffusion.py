@@ -366,6 +366,8 @@ def main(**kwargs):
     c.G_kwargs.fused_modconv_default = 'inference_only'  # Speed up training by using regular convolutions instead of grouped convolutions.
     c.image_cond = opts.image_cond
     c.text_cond = opts.text_cond
+    c.random_seed = opts.seed
+
     # Performance-related toggles.
     if opts.fp32:
         c.G_kwargs.num_fp16_res = c.D_kwargs.num_fp16_res = 0

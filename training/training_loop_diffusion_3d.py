@@ -22,7 +22,7 @@ from metrics import metric_main
 import nvdiffrast.torch as dr
 import time
 from tqdm.auto import tqdm
-from training.inference_utils import save_image_grid, save_visualization
+from training.inference_utils import save_image_grid, save_visualization, save_visualization_with_cond
 from denoising_diffusion_pytorch import Unet1D_cond, GaussianDiffusion1D_cond
 from accelerate import Accelerator
 from clip import clip
@@ -62,7 +62,7 @@ def training_loop(
         rank=0,  # Rank of the current process in [0, num_gpus].
         batch_size=4,  # Total batch size for one training iteration. Can be larger than batch_gpu * num_gpus.
         train_num_steps=100000,  # Total length of the training.
-        image_snapshot_ticks=50,  # How often to save image snapshots? None = disable.
+        image_snapshot_ticks=3000,  # How often to save image snapshots? None = disable.
         network_snapshot_ticks=5000,  # How often to save network snapshots? None = disable.
         # Callback function for determining whether to abort training. Must return consistent results across ranks.
         progress_fn=None,  # Callback function for updating training progress. Called for all ranks.
@@ -174,8 +174,10 @@ def training_loop(
         grid_size = setup_snapshot_image_grid(img_res=img_res, inference=inference_vis)
 
         torch.manual_seed(1234)
-        grid_z = torch.randn([grid_size[0] * grid_size[1], G_ema.w_dim], device=device).split(1)  # This one is the latent code for shape generation
-        grid_c = torch.ones(grid_size[0] * grid_size[1], device=device).split(1)  # This one is not used, just for the compatiable with the code structure.
+        n_shape = grid_size[0] * grid_size[1]
+        grid_z = torch.randn([n_shape, G_kwargs.w_dim], device=device).unsqueeze(1).split(1)  # random code for geometry
+        grid_tex_z = torch.randn([n_shape, G_kwargs.w_dim], device=device).unsqueeze(1).repeat(1, tex_diffusion_model.model.cond_ch, 1).split(1)  # random code for texture
+        grid_c = torch.ones(n_shape, device=device).split(1)
 
 
     if rank == 0:
@@ -252,9 +254,15 @@ def training_loop(
                 ema_geo_diffusion_model.update()
                 ema_tex_diffusion_model.update()
 
-                # if step != 0 and step % save_and_sample_every == 0:
-                #     ema_geo_diffusion_model.ema_model.eval()
-                #     ema_tex_diffusion_model.ema_model.eval()
+                if step != 0 and step % image_snapshot_ticks == 0:
+                    ema_geo_diffusion_model.ema_model.eval()
+                    ema_tex_diffusion_model.ema_model.eval()
+                    print('==> generate ')
+                    save_visualization_with_cond(
+                        G_ema, ema_geo_diffusion_model.ema_model, ema_tex_diffusion_model.ema_model, None, grid_z, grid_c, run_dir, step, grid_size, 0,
+                        save_all=False,
+                        grid_tex_z=grid_tex_z
+                    )
 
             if step % network_snapshot_ticks == 0:
                 #snapshot_data = dict(geo_diff=geo_diffusion_model, tex_diff=tex_diffusion_model)
