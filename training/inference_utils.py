@@ -246,16 +246,28 @@ def save_visualization_with_cond(
             images_list = []
             mesh_v_list = []
             mesh_f_list = []
-            for z, geo_z, c, cond in zip(grid_tex_z, grid_z, grid_c, condition):
-                ws_geo = geo_diff.sample(cond, 1, z=geo_z)
-                ws_tex = tex_diff.sample(torch.cat([ws_geo, cond], 1), 1, z=z)[:, 0, :]
-                img, mask, sdf, deformation, v_deformed, mesh_v, mesh_f, gen_camera, tex_hard_mask = G_ema.generate_3d_from_latent(
-                    ws_geo, ws_tex, camera=camera)
-                rgb_img = img[:, :3]
-                save_img = torch.cat([rgb_img, mask.permute(0, 3, 1, 2).expand(-1, 3, -1, -1)], dim=-1).detach()
-                images_list.append(save_img.cpu().numpy())
-                mesh_v_list.extend([v.data.cpu().numpy() for v in mesh_v])
-                mesh_f_list.extend([f.data.cpu().numpy() for f in mesh_f])
+            if condition is not None:
+                for z, geo_z, c, cond in zip(grid_tex_z, grid_z, grid_c, condition):
+                    ws_geo = geo_diff.sample(cond, 1, z=geo_z)
+                    ws_tex = tex_diff.sample(torch.cat([ws_geo, cond], 1), 1, z=z)[:, 0, :]
+                    img, mask, sdf, deformation, v_deformed, mesh_v, mesh_f, gen_camera, tex_hard_mask = G_ema.generate_3d_from_latent(
+                        ws_geo, ws_tex, camera=camera)
+                    rgb_img = img[:, :3]
+                    save_img = torch.cat([rgb_img, mask.permute(0, 3, 1, 2).expand(-1, 3, -1, -1)], dim=-1).detach()
+                    images_list.append(save_img.cpu().numpy())
+                    mesh_v_list.extend([v.data.cpu().numpy() for v in mesh_v])
+                    mesh_f_list.extend([f.data.cpu().numpy() for f in mesh_f])
+            else:
+                for z, geo_z, c in zip(grid_tex_z, grid_z, grid_c):
+                    ws_geo = geo_diff.sample(1, z=geo_z)
+                    ws_tex = tex_diff.sample(1, z=z)
+                    img, mask, sdf, deformation, v_deformed, mesh_v, mesh_f, gen_camera, tex_hard_mask = G_ema.generate_3d_from_latent(
+                        ws_geo, ws_tex, camera=camera)
+                    rgb_img = img[:, :3]
+                    save_img = torch.cat([rgb_img, mask.permute(0, 3, 1, 2).expand(-1, 3, -1, -1)], dim=-1).detach()
+                    images_list.append(save_img.cpu().numpy())
+                    mesh_v_list.extend([v.data.cpu().numpy() for v in mesh_v])
+                    mesh_f_list.extend([f.data.cpu().numpy() for f in mesh_f])
             images = np.concatenate(images_list, axis=0)
             if save_gif_name is None:
                 save_file_name = 'fakes'
