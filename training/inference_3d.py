@@ -107,20 +107,20 @@ def inference(
     n_shape = grid_size[0] * grid_size[1]
     grid_z = torch.randn([n_shape, G.z_dim], device=device).split(1)  # random code for geometry
     grid_tex_z = torch.randn([n_shape, G.z_dim], device=device).split(1)  # random code for texture
-    grid_c = torch.randint(0, D_kwargs['cmap_dim'], [n_shape, G.c_dim], device=device).split(1)
+    grid_c = torch.randint(0, D_kwargs['class_dim'], [n_shape, G.c_dim], device=device).split(1)
 
     save_visualization(
         G_ema, grid_z, grid_c, run_dir, 0, grid_size, 0,
         save_all=False,
         grid_tex_z=grid_tex_z,
-        cmap_dim=D_kwargs['cmap_dim']
+        class_dim=D_kwargs['class_dim']
     )
 
     if inference_to_generate_textured_mesh:
         print('==> generate inference 3d shapes with texture')
         save_textured_mesh_for_inference(
             G_ema, grid_z, grid_c, run_dir, save_mesh_dir='texture_mesh_for_inference',
-            c_to_compute_w_avg=None, grid_tex_z=grid_tex_z, cmap_dim=D_kwargs['cmap_dim'])
+            c_to_compute_w_avg=None, grid_tex_z=grid_tex_z, class_dim=D_kwargs['class_dim'])
 
     if inference_save_interpolation:
         print('==> generate interpolation results')
