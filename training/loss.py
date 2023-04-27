@@ -197,7 +197,7 @@ class StyleGAN2Loss(Loss):
                 # Optimize for the real image
                 real_img_tmp = real_img.detach().requires_grad_(phase in ['Dreg', 'Dboth'])
 
-                real_logits = self.run_D(real_img_tmp, real_c[:, -1], )
+                real_logits = self.run_D(real_img_tmp, real_c[:, :-1], )
                 real_logits, real_logits_c, real_logits_mask, real_logits_mask_c = real_logits
 
                 training_stats.report('Loss/scores/real', real_logits)

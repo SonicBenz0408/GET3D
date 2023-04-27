@@ -147,10 +147,10 @@ def save_visualization_for_interpolation(
 def save_visualization(
         G_ema, grid_z, grid_c, run_dir, cur_nimg, grid_size, cur_tick,
         image_snapshot_ticks=50,
-        cmap_dim=None,
         save_gif_name=None,
         save_all=True,
         grid_tex_z=None,
+        class_num=None
 ):
     '''
     Save visualization during training
@@ -168,7 +168,7 @@ def save_visualization(
     :return:
     '''
     with torch.no_grad():
-        G_ema.update_w_avg(cmap_dim=cmap_dim)
+        G_ema.update_w_avg(class_num=class_num)
         camera_list = G_ema.synthesis.generate_rotate_camera_list(n_batch=grid_z[0].shape[0])
         camera_img_list = []
         if not save_all:
@@ -215,7 +215,7 @@ def save_visualization(
 
 def save_textured_mesh_for_inference(
         G_ema, grid_z, grid_c, run_dir, save_mesh_dir=None,
-        cmap_dim=None, grid_tex_z=None, use_style_mixing=False):
+        class_num=None, grid_tex_z=None, use_style_mixing=False):
     '''
     Generate texture mesh for generation
     :param G_ema: GET3D generator
@@ -229,7 +229,7 @@ def save_textured_mesh_for_inference(
     :return:
     '''
     with torch.no_grad():
-        G_ema.update_w_avg(cmap_dim=cmap_dim)
+        G_ema.update_w_avg(class_num=class_num)
         save_mesh_idx = 0
         mesh_dir = os.path.join(run_dir, save_mesh_dir)
         os.makedirs(mesh_dir, exist_ok=True)

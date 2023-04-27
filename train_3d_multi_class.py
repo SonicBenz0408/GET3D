@@ -277,7 +277,7 @@ def main(**kwargs):
     
     c.G_kwargs.c_dim = 1
     c.D_kwargs.c_dim = 0
-    c.D_kwargs.cmap_dim = 2  # number of class
+    c.D_kwargs.class_num = 3
 
     c.G_kwargs.tet_res = opts.tet_res
 

@@ -233,7 +233,7 @@ def training_loop(
             save_image_grid(images, os.path.join(run_dir, 'reals.png'), drange=[0, 255], grid_size=grid_size)
         torch.manual_seed(1234)
         grid_z = torch.randn([images.shape[0], G.z_dim], device=device).split(1)  # This one is the latent code for shape generation
-        grid_c = torch.randint(0, D_kwargs['cmap_dim'], [images.shape[0], G.c_dim], device=device).split(1)  # This one is the condition to controll generation of different classes
+        grid_c = torch.randint(0, D_kwargs['class_num'], [images.shape[0], G.c_dim], device=device).split(1)  # This one is the condition to controll generation of different classes
 
     if rank == 0:
         print('Initializing logs...')
@@ -379,7 +379,7 @@ def training_loop(
                     G_ema, grid_z, grid_c, run_dir, cur_nimg, grid_size, cur_tick,
                     image_snapshot_ticks,
                     save_all=(cur_tick % (image_snapshot_ticks * 4) == 0) and training_set.resolution < 512,
-                    cmap_dim=D_kwargs['cmap_dim']
+                    class_num=D_kwargs['class_num']
                 )
                 print('==> saved visualization')
 

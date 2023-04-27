@@ -320,7 +320,7 @@ class ImageFolderDataset(Dataset):
             mask = np.ones(1)
         img = resize_img.transpose(2, 0, 1)
         background = np.zeros_like(img)
-        img = img * (mask > 0).astype(np.float) + background * (1 - (mask > 0).astype(np.float))
+        img = img * (mask > 0).astype(np.float64) + background * (1 - (mask > 0).astype(np.float64))
         return np.ascontiguousarray(img), condinfo, np.ascontiguousarray(mask)
 
     def _load_raw_image(self, raw_idx):
@@ -340,7 +340,7 @@ class MultiClassImageFolderDataset(Dataset):
     def __init__(
             self,
             path,  # Path to directory or zip.
-            chosen_classes=["motorbike", "chair"],
+            chosen_classes=["car", "motorbike", "chair"],
             resolution=None,  # Ensure specific resolution, None = highest available.
             # data_camera_mode='shapenet_car',
             add_camera_cond=False,

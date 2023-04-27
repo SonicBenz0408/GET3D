@@ -516,6 +516,7 @@ class DiscriminatorEpilogue_multi(torch.nn.Module):
             self,
             in_channels,  # Number of input channels.
             cmap_dim,  # Dimensionality of mapped conditioning label, 0 = no label.
+            class_num,  
             resolution,  # Resolution of this block.
             img_channels,  # Number of input color channels.
             device='cuda',
@@ -528,6 +529,7 @@ class DiscriminatorEpilogue_multi(torch.nn.Module):
         assert architecture in ['orig', 'skip', 'resnet']
         super().__init__()
         self.in_channels = in_channels
+        self.class_num = class_num
         self.cmap_dim = cmap_dim
         self.resolution = resolution
         self.img_channels = img_channels
@@ -541,8 +543,8 @@ class DiscriminatorEpilogue_multi(torch.nn.Module):
             conv_clamp=conv_clamp, device=device)
         self.fc = FullyConnectedLayer(in_channels * (resolution ** 2), in_channels, activation=activation, device=device)
         self.fc_multi = FullyConnectedLayer(in_channels * (resolution ** 2), in_channels, activation=activation, device=device)
-        self.out = FullyConnectedLayer(in_channels, 1, device=device)
-        self.out_multi = FullyConnectedLayer(in_channels, cmap_dim, device=device)
+        self.out = FullyConnectedLayer(in_channels, 1 if cmap_dim == 0 else cmap_dim, device=device)
+        self.out_multi = FullyConnectedLayer(in_channels, class_num if cmap_dim == 0 else cmap_dim * class_num, device=device)
 
     def forward(self, x, img, cmap=None, force_fp32=False):
         misc.assert_shape(x, [None, self.in_channels, self.resolution, self.resolution])  # [NCHW]
@@ -565,9 +567,12 @@ class DiscriminatorEpilogue_multi(torch.nn.Module):
         c_logits = self.out_multi(self.fc_multi(features.flatten(1)))
 
         # Conditioning.
-        # if self.cmap_dim > 0:
-        #     misc.assert_shape(cmap, [None, self.cmap_dim])
-        #     x = (x * cmap).sum(dim=1, keepdim=True) * (1 / np.sqrt(self.cmap_dim))
+        if self.cmap_dim > 0:
+            misc.assert_shape(cmap, [None, self.cmap_dim])
+            d_logits = (d_logits * cmap).sum(dim=1, keepdim=True) * (1 / np.sqrt(self.cmap_dim))
+
+            c_logits = c_logits.view(c_logits.shape[0], self.class_num, self.cmap_dim)
+            c_logits = (c_logits * (cmap.unsqueeze(1).repeat(1, self.class_num, 1))).sum(dim=2, keepdim=False) * (1 / np.sqrt(self.cmap_dim))
 
         assert d_logits.dtype == dtype
         assert c_logits.dtype == dtype
@@ -750,6 +755,7 @@ class Discriminator_multi(torch.nn.Module):
             add_camera_cond=False,  # whether add camera for conditioning
             data_camera_mode='',  #
             device='cuda',
+            class_num=3,  # number of class
             block_kwargs={},  # Arguments for DiscriminatorBlock.
             mapping_kwargs={},  # Arguments for MappingNetwork.
             epilogue_kwargs={},  # Arguments for DiscriminatorEpilogue.
@@ -759,6 +765,7 @@ class Discriminator_multi(torch.nn.Module):
         self.data_camera_mode = data_camera_mode
         self.conditional_dim = c_dim
         self.c_dim = c_dim
+        self.class_num = class_num
         self.add_camera_cond = add_camera_cond
         self.img_resolution = img_resolution
         self.img_resolution_log2 = int(np.log2(img_resolution))
@@ -784,8 +791,8 @@ class Discriminator_multi(torch.nn.Module):
 
         if cmap_dim is None:
             cmap_dim = channels_dict[4]
-        # if self.c_dim == 0:
-        #     cmap_dim = 0
+        if self.c_dim == 0:
+            cmap_dim = 0
 
         # Step 1: set up discriminator for RGB image
         common_kwargs = dict(img_channels=self.img_channels_drgb, architecture=architecture, conv_clamp=conv_clamp)
@@ -802,7 +809,7 @@ class Discriminator_multi(torch.nn.Module):
             cur_layer_idx += block.num_layers
         if self.c_dim > 0:
             self.mapping = MappingNetwork(z_dim=0, c_dim=self.c_dim, w_dim=cmap_dim, num_ws=None, w_avg_beta=None, device=device, **mapping_kwargs)
-        self.b4 = DiscriminatorEpilogue_multi(channels_dict[4], cmap_dim=cmap_dim, resolution=4, device=device, **epilogue_kwargs, **common_kwargs)
+        self.b4 = DiscriminatorEpilogue_multi(channels_dict[4], class_num=class_num, cmap_dim=cmap_dim, resolution=4, device=device, **epilogue_kwargs, **common_kwargs)
         #self.b4_c = DiscriminatorEpilogue(channels_dict[4], cmap_dim=cmap_dim, resolution=4, device=device, **epilogue_kwargs, **common_kwargs)
 
         # Step 2: set up discriminator for mask image
@@ -827,7 +834,7 @@ class Discriminator_multi(torch.nn.Module):
                 z_dim=0, c_dim=self.c_dim, w_dim=cmap_dim, num_ws=None, w_avg_beta=None, device=device,
                 **mapping_kwargs)
         self.mask_b4 = DiscriminatorEpilogue_multi(
-            mask_channels_dict[4], cmap_dim=cmap_dim, resolution=4, device=device, **epilogue_kwargs,
+            mask_channels_dict[4], class_num=class_num, cmap_dim=cmap_dim, resolution=4, device=device, **epilogue_kwargs,
             **common_kwargs)
         # self.mask_b4_c = DiscriminatorEpilogue(
         #     mask_channels_dict[4], cmap_dim=cmap_dim, resolution=4, device=device, **epilogue_kwargs,
@@ -871,8 +878,8 @@ class Discriminator_multi(torch.nn.Module):
             block = getattr(self, f'mask_b{res}')
             mask_x, mask_img = block(mask_x, mask_img, alpha, (img_res // 2) == res, **block_kwargs)
         mask_cmap = None
-        # if self.c_dim > 0:
-        #     mask_cmap = self.mask_mapping(None, c)
+        if self.c_dim > 0:
+            mask_cmap = self.mask_mapping(None, c)
         mask_x, mask_x_c = self.mask_b4(mask_x, mask_img, mask_cmap)
         # mask_x_c = self.mask_b4_c(mask_x, mask_img, mask_cmap)
 
@@ -885,8 +892,8 @@ class Discriminator_multi(torch.nn.Module):
             block = getattr(self, f'b{res}')
             x, img_for_tex = block(x, img_for_tex, alpha, (img_res // 2) == res, **block_kwargs)
         cmap = None
-        # if self.c_dim > 0:
-        #     cmap = self.mapping(None, c)
+        if self.c_dim > 0:
+            cmap = self.mapping(None, c)
         x, x_c = self.b4(x, img_for_tex, cmap)
         # x_c = self.b4_c(x, img_for_tex, cmap)
         return x, x_c, mask_x, mask_x_c
