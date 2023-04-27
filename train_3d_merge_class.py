@@ -6,18 +6,18 @@
 # distribution of this software and related documentation without an express
 # license agreement from NVIDIA CORPORATION & AFFILIATES is strictly prohibited.
 
-import os
-import click
-import re
 import json
+import os
+import re
 import tempfile
+
+import click
 import torch
+
 import dnnlib
-from training import training_loop_3d
 from metrics import metric_main
-from torch_utils import training_stats
-from torch_utils import custom_ops
-from training import inference_3d
+from torch_utils import custom_ops, training_stats
+from training import inference_3d, training_loop_3d
 
 
 # ----------------------------------------------------------------------------

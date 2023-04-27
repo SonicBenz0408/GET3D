@@ -8,12 +8,14 @@
 
 
 import os
-import numpy as np
 import zipfile
-import torch
-import dnnlib
-import cv2
 from pathlib import Path
+
+import cv2
+import numpy as np
+import torch
+
+import dnnlib
 
 try:
     import pyspng
@@ -322,7 +324,7 @@ class ImageFolderDataset(Dataset):
             mask = np.ones(1)
         img = resize_img.transpose(2, 0, 1)
         background = np.zeros_like(img)
-        img = img * (mask > 0).astype(np.float) + background * (1 - (mask > 0).astype(np.float))
+        img = img * (mask > 0).astype(np.float64) + background * (1 - (mask > 0).astype(np.float64))
         return np.ascontiguousarray(img), condinfo, np.ascontiguousarray(mask)
     
     def get_label(self, idx):
