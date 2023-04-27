@@ -9,19 +9,15 @@
 import copy
 import math
 
+import clip
 import numpy as np
 import torch
-from torch_utils import misc
-from torch_utils import persistence
-from torch_utils.ops import conv2d_resample
-from torch_utils.ops import upfirdn2d
-from torch_utils.ops import bias_act
-from torch_utils.ops import fma
-from torch import nn
 import torch.nn.functional as F
 import torchvision
+from torch import nn
 
-import clip
+from torch_utils import misc, persistence
+from torch_utils.ops import bias_act, conv2d_resample, fma, upfirdn2d
 
 
 @misc.profiled_function
@@ -503,79 +499,12 @@ class DiscriminatorEpilogue(torch.nn.Module):
         x = self.out(x)
 
         # Conditioning.
-        # if self.cmap_dim > 0:
-        #     misc.assert_shape(cmap, [None, self.cmap_dim])
-        #     x = (x * cmap).sum(dim=1, keepdim=True) * (1 / np.sqrt(self.cmap_dim))
+        if self.cmap_dim > 0:
+            misc.assert_shape(cmap, [None, self.cmap_dim])
+            x = (x * cmap).sum(dim=1, keepdim=True) * (1 / np.sqrt(self.cmap_dim))
 
         assert x.dtype == dtype
         return x
-
-    def extra_repr(self):
-        return f'resolution={self.resolution:d}, architecture={self.architecture:s}'
-
-@persistence.persistent_class
-class DiscriminatorEpilogue_multi(torch.nn.Module):
-    def __init__(
-            self,
-            in_channels,  # Number of input channels.
-            cmap_dim,  # Dimensionality of mapped conditioning label, 0 = no label.
-            resolution,  # Resolution of this block.
-            img_channels,  # Number of input color channels.
-            device='cuda',
-            architecture='resnet',  # Architecture: 'orig', 'skip', 'resnet'.
-            mbstd_group_size=4,  # Group size for the minibatch standard deviation layer, None = entire minibatch.
-            mbstd_num_channels=1,  # Number of features for the minibatch standard deviation layer, 0 = disable.
-            activation='lrelu',  # Activation function: 'relu', 'lrelu', etc.
-            conv_clamp=None,  # Clamp the output of convolution layers to +-X, None = disable clamping.
-    ):
-        assert architecture in ['orig', 'skip', 'resnet']
-        super().__init__()
-        self.in_channels = in_channels
-        self.cmap_dim = cmap_dim
-        self.resolution = resolution
-        self.img_channels = img_channels
-        self.architecture = architecture
-
-        if architecture == 'skip':
-            self.fromrgb = Conv2dLayer(img_channels, in_channels, kernel_size=1, activation=activation, device=device)
-        self.mbstd = MinibatchStdLayer(group_size=mbstd_group_size, num_channels=mbstd_num_channels) if mbstd_num_channels > 0 else None
-        self.conv = Conv2dLayer(
-            in_channels + mbstd_num_channels, in_channels, kernel_size=3, activation=activation,
-            conv_clamp=conv_clamp, device=device)
-        self.fc = FullyConnectedLayer(in_channels * (resolution ** 2), in_channels, activation=activation, device=device)
-        self.fc_multi = FullyConnectedLayer(in_channels * (resolution ** 2), in_channels, activation=activation, device=device)
-        self.out = FullyConnectedLayer(in_channels, 1, device=device)
-        self.out_multi = FullyConnectedLayer(in_channels, cmap_dim, device=device)
-
-    def forward(self, x, img, cmap=None, force_fp32=False):
-        misc.assert_shape(x, [None, self.in_channels, self.resolution, self.resolution])  # [NCHW]
-        _ = force_fp32  # unused
-        dtype = torch.float32
-        memory_format = torch.contiguous_format
-
-        # FromRGB.
-        x = x.to(dtype=dtype, memory_format=memory_format)
-        if self.architecture == 'skip':
-            misc.assert_shape(img, [None, self.img_channels, self.resolution, self.resolution])
-            img = img.to(dtype=dtype, memory_format=memory_format)
-            x = x + self.fromrgb(img)
-        # Main layers.
-        if self.mbstd is not None:
-            x = self.mbstd(x)
-        features = self.conv(x)
-
-        d_logits = self.out(self.fc(features.flatten(1)))
-        c_logits = self.out_multi(self.fc_multi(features.flatten(1)))
-
-        # Conditioning.
-        # if self.cmap_dim > 0:
-        #     misc.assert_shape(cmap, [None, self.cmap_dim])
-        #     x = (x * cmap).sum(dim=1, keepdim=True) * (1 / np.sqrt(self.cmap_dim))
-
-        assert d_logits.dtype == dtype
-        assert c_logits.dtype == dtype
-        
-        return d_logits, c_logits
 
     def extra_repr(self):
         return f'resolution={self.resolution:d}, architecture={self.architecture:s}'
@@ -737,167 +666,6 @@ class Discriminator(torch.nn.Module):
     def extra_repr(self):
         return f'c_dim={self.c_dim:d}, img_resolution={self.img_resolution:d}, img_channels={self.img_channels:d}'
 
-
-@persistence.persistent_class
-class Discriminator_multi(torch.nn.Module):
-    def __init__(
-            self,
-            c_dim,  # Conditioning label (C) dimensionality.
-            img_resolution,  # Input resolution.
-            img_channels,  # Number of input color channels.
-            architecture='resnet',  # Architecture: 'orig', 'skip', 'resnet'.
-            channel_base=32768,  # Overall multiplier for the number of channels.
-            channel_max=512,  # Maximum number of channels in any layer.
-            num_fp16_res=4,  ############## Use FP16 for the N highest resolutions.
-            conv_clamp=256,  # Clamp the output of convolution layers to +-X, None = disable clamping.
-            cmap_dim=None,  # Dimensionality of mapped conditioning label, None = default.
-            add_camera_cond=False,  # whether add camera for conditioning
-            data_camera_mode='',  #
-            device='cuda',
-            block_kwargs={},  # Arguments for DiscriminatorBlock.
-            mapping_kwargs={},  # Arguments for MappingNetwork.
-            epilogue_kwargs={},  # Arguments for DiscriminatorEpilogue.
-    ):
-        super().__init__()
-
-        self.data_camera_mode = data_camera_mode
-        self.conditional_dim = c_dim
-        self.c_dim = c_dim
-        self.add_camera_cond = add_camera_cond
-        self.img_resolution = img_resolution
-        self.img_resolution_log2 = int(np.log2(img_resolution))
-
-        self.img_channels_drgb = img_channels
-        self.img_channels_dmask = 1
-        self.block_resolutions = [2 ** i for i in range(self.img_resolution_log2, 2, -1)]
-        channels_dict = {res: min(channel_base // res, channel_max) for res in self.block_resolutions + [4]}
-        fp16_resolution = max(2 ** (self.img_resolution_log2 + 1 - num_fp16_res), 8)
-
-        # We will compute the positional encoding for the camera
-        if self.add_camera_cond:
-            if self.data_camera_mode == 'shapenet_car' \
-                    or self.data_camera_mode == 'shapenet_chair' or self.data_camera_mode == 'shapenet_motorbike' \
-                    or self.data_camera_mode == 'renderpeople' or self.data_camera_mode == 'ts_house' \
-                    or self.data_camera_mode == 'ts_animal':
-                self.camera_dim = 2
-                self.camera_dim_enc = 2 + 2 * 2 * 3
-
-            else:
-                raise NotImplementedError
-            self.c_dim = self.camera_dim_enc + self.c_dim
-
-        if cmap_dim is None:
-            cmap_dim = channels_dict[4]
-        # if self.c_dim == 0:
-        #     cmap_dim = 0
-
-        # Step 1: set up discriminator for RGB image
-        common_kwargs = dict(img_channels=self.img_channels_drgb, architecture=architecture, conv_clamp=conv_clamp)
-        cur_layer_idx = 0
-        for res in self.block_resolutions:
-            in_channels = channels_dict[res] if res < img_resolution else 0
-            tmp_channels = channels_dict[res]
-            out_channels = channels_dict[res // 2]
-            use_fp16 = (res >= fp16_resolution)
-            block = DiscriminatorBlock(
-                in_channels, tmp_channels, out_channels, resolution=res,
-                first_layer_idx=cur_layer_idx, use_fp16=use_fp16, device=device, **block_kwargs, **common_kwargs)
-            setattr(self, f'b{res}', block)
-            cur_layer_idx += block.num_layers
-        if self.c_dim > 0:
-            self.mapping = MappingNetwork(z_dim=0, c_dim=self.c_dim, w_dim=cmap_dim, num_ws=None, w_avg_beta=None, device=device, **mapping_kwargs)
-        self.b4 = DiscriminatorEpilogue_multi(channels_dict[4], cmap_dim=cmap_dim, resolution=4, device=device, **epilogue_kwargs, **common_kwargs)
-        #self.b4_c = DiscriminatorEpilogue(channels_dict[4], cmap_dim=cmap_dim, resolution=4, device=device, **epilogue_kwargs, **common_kwargs)
-
-        # Step 2: set up discriminator for mask image
-        common_kwargs = dict(img_channels=self.img_channels_dmask, architecture=architecture, conv_clamp=conv_clamp)
-        cur_layer_idx = 0
-        mask_channel_base = channel_base
-        mask_channel_max = channel_max
-        mask_channels_dict = {res: min(mask_channel_base // res, mask_channel_max) for res in self.block_resolutions + [4]}
-        for res in self.block_resolutions:
-            in_channels = mask_channels_dict[res] if res < img_resolution else 0
-            tmp_channels = mask_channels_dict[res]
-            out_channels = mask_channels_dict[res // 2]
-            use_fp16 = (res >= fp16_resolution)
-            block = DiscriminatorBlock(
-                in_channels, tmp_channels, out_channels, resolution=res,
-                first_layer_idx=cur_layer_idx, use_fp16=use_fp16, device=device, **block_kwargs,
-                **common_kwargs)
-            setattr(self, f'mask_b{res}', block)
-            cur_layer_idx += block.num_layers
-        if self.c_dim > 0:
-            self.mask_mapping = MappingNetwork(
-                z_dim=0, c_dim=self.c_dim, w_dim=cmap_dim, num_ws=None, w_avg_beta=None, device=device,
-                **mapping_kwargs)
-        self.mask_b4 = DiscriminatorEpilogue_multi(
-            mask_channels_dict[4], cmap_dim=cmap_dim, resolution=4, device=device, **epilogue_kwargs,
-            **common_kwargs)
-        # self.mask_b4_c = DiscriminatorEpilogue(
-        #     mask_channels_dict[4], cmap_dim=cmap_dim, resolution=4, device=device, **epilogue_kwargs,
-        #     **common_kwargs)
-
-    def pos_enc_angle(self, camera_angle):
-        # Encode the camera angles into cos/sin
-        if self.data_camera_mode == 'shapenet_car' \
-                or self.data_camera_mode == 'shapenet_chair' or self.data_camera_mode == 'shapenet_motorbike' \
-                or self.data_camera_mode == 'renderpeople' or self.data_camera_mode == 'ts_house' \
-                or self.data_camera_mode == 'ts_animal':
-            L = 3
-            p_transformed = torch.cat(
-                [torch.cat(
-                    [torch.sin((2 ** i) * camera_angle),
-                     torch.cos((2 ** i) * camera_angle)],
-                    dim=-1) for i in range(L)], dim=-1)
-            p_transformed = torch.cat([p_transformed, camera_angle], dim=-1)
-        else:
-            raise NotImplementedError
-        return p_transformed
-
-    def forward(self, img, c, update_emas=False, alpha=1.0, mask_pyramid=None, **block_kwargs):
-        # Encoding camera condition first
-        if self.add_camera_cond:
-            if self.conditional_dim == 0:
-                c = self.pos_enc_angle(c)
-            else:
-                condition_c = c[:, :self.conditional_dim]
-                pos_encode_c = self.pos_enc_angle(c[:, self.conditional_dim:])
-                c = torch.cat([condition_c, pos_encode_c], dim=-1)
-        else:
-            c = None
-
-        # Step 1: feed the mask image into the discriminator
-        _ = update_emas
-        mask_x = None
-        img_res = img.shape[-1]
-        mask_img = img[:, self.img_channels_drgb:self.img_channels_drgb + self.img_channels_dmask]  # This is only supervising the geometry
-        for res in self.block_resolutions:
-            block = getattr(self, f'mask_b{res}')
-            mask_x, mask_img = block(mask_x, mask_img, alpha, (img_res // 2) == res, **block_kwargs)
-        mask_cmap = None
-        # if self.c_dim > 0:
-        #     mask_cmap = self.mask_mapping(None, c)
-        mask_x, mask_x_c = self.mask_b4(mask_x, mask_img, mask_cmap)
-        # mask_x_c = self.mask_b4_c(mask_x, mask_img, mask_cmap)
-
-        # Step 2: feed the RGB image into another discriminator
-        img_for_tex = img[:, :self.img_channels_drgb, :, :]
-        _ = update_emas
-        x = None
-        img_res = img_for_tex.shape[-1]
-        for res in self.block_resolutions:
-            block = getattr(self, f'b{res}')
-            x, img_for_tex = block(x, img_for_tex, alpha, (img_res // 2) == res, **block_kwargs)
-        cmap = None
-        # if self.c_dim > 0:
-        #     cmap = self.mapping(None, c)
-        x, x_c = self.b4(x, img_for_tex, cmap)
-        # x_c = self.b4_c(x, img_for_tex, cmap)
-        return x, x_c, mask_x, mask_x_c
-
-    def extra_repr(self):
-        return f'c_dim={self.c_dim:d}, img_resolution={self.img_resolution:d}, img_channels={self.img_channels:d}'
-
 @persistence.persistent_class
 class DiscriminatorCLIP(torch.nn.Module):
     def __init__(
@@ -1041,8 +809,8 @@ class DiscriminatorCLIP(torch.nn.Module):
             block = getattr(self, f'mask_b{res}')
             mask_x, mask_img = block(mask_x, mask_img, alpha, (img_res // 2) == res, **block_kwargs)
         mask_cmap = None
-        # if self.c_dim > 0:
-        #     mask_cmap = self.mask_mapping(None, c)
+        if self.c_dim > 0:
+            mask_cmap = self.mask_mapping(None, c)
         mask_x = self.mask_b4(mask_x, mask_img, mask_cmap)
 
         # Step 2: feed the RGB image into another discriminator
@@ -1054,11 +822,12 @@ class DiscriminatorCLIP(torch.nn.Module):
             block = getattr(self, f'b{res}')
             x, img_for_tex = block(x, img_for_tex, alpha, (img_res // 2) == res, **block_kwargs)
         cmap = None
-        # if self.c_dim > 0:
-        #     cmap = self.mapping(None, c)
+        if self.c_dim > 0:
+            cmap = self.mapping(None, c)
         x = self.b4(x, img_for_tex, cmap)
 
         # Step3: feed the RGB image into clip image encoder
+        self.clip_model.requires_grad_(False)
         img_for_tex = img[:, :self.img_channels_drgb, :, :]
         img_for_clip = self.clip_preprocess(img_for_tex)
         clip_feature_x = self.clip_model.encode_image(img_for_clip)

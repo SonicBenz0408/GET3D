@@ -9,7 +9,7 @@
 # !/usr/bin/env python
 # -*- coding:utf-8 -*-
 import torch
-from tqdm import tqdm
+from rich.progress import track
 
 
 def calculate_lfd_distance(
@@ -81,7 +81,7 @@ class LightFieldDistanceFunction(torch.autograd.Function):
 
         all_dist = []
         with torch.no_grad():
-            for i in tqdm(range(n)):
+            for i in track(range(n)):
                 start_idx = 0
                 n_all_run = tgt_ArtCoeff.shape[0]
                 n_each_run = 1000

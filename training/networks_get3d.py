@@ -6,18 +6,23 @@
 # distribution of this software and related documentation without an express
 # license agreement from NVIDIA CORPORATION & AFFILIATES is strictly prohibited.
 import math
+
 import numpy as np
+import nvdiffrast.torch as dr
 import torch
 import torch.nn.functional as F
+
 from torch_utils import persistence
-import nvdiffrast.torch as dr
-from training.sample_camera_distribution import sample_camera, create_camera_from_angle
-from uni_rep.rep_3d.dmtet import DMTetGeometry
+from training.discriminator_architecture import (Discriminator,
+                                                 DiscriminatorCLIP)
+from training.geometry_predictor import (Conv3DImplicitSynthesisNetwork,
+                                         MappingNetwork, ToRGBLayer,
+                                         TriPlaneTex, TriPlaneTexGeo)
+from training.sample_camera_distribution import (create_camera_from_angle,
+                                                 sample_camera)
 from uni_rep.camera.perspective_camera import PerspectiveCamera
 from uni_rep.render.neural_render import NeuralRender
-from training.discriminator_architecture import Discriminator, Discriminator_multi, DiscriminatorCLIP
-from training.geometry_predictor import Conv3DImplicitSynthesisNetwork, TriPlaneTex, \
-    MappingNetwork, ToRGBLayer, TriPlaneTexGeo
+from uni_rep.rep_3d.dmtet import DMTetGeometry
 
 
 @persistence.persistent_class

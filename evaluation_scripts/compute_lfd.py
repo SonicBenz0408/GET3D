@@ -6,17 +6,18 @@
 # distribution of this software and related documentation without an express
 # license agreement from NVIDIA CORPORATION & AFFILIATES is strictly prohibited.
 
+import os
+
 import numpy as np
 import torch
-import os
-from tqdm import tqdm
 from load_data.interface import LoadData
+from rich.progress import track
 
 
 def read_all_data(folder_list, load_data, add_model_str=True, add_ori_name=False):
     all_data = []
 
-    for f in tqdm(folder_list):
+    for f in track(folder_list):
         if add_model_str:
             result = load_data.run(os.path.join(f, 'model', 'mesh'))
         elif add_ori_name:

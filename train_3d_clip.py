@@ -6,18 +6,19 @@
 # distribution of this software and related documentation without an express
 # license agreement from NVIDIA CORPORATION & AFFILIATES is strictly prohibited.
 
-import os
-import click
-import re
 import json
+import os
+import re
 import tempfile
+
+import click
+import rich
 import torch
+
 import dnnlib
-from training import training_loop_3d
 from metrics import metric_main
-from torch_utils import training_stats
-from torch_utils import custom_ops
-from training import inference_3d
+from torch_utils import custom_ops, training_stats
+from training import inference_3d, training_loop_3d
 
 
 # ----------------------------------------------------------------------------
@@ -337,6 +338,9 @@ def main(**kwargs):
     desc = f'{opts.cfg:s}-{dataset_name:s}-gpus{c.num_gpus:d}-batch{c.batch_size:d}-gamma{c.loss_kwargs.r1_gamma:g}'
     if opts.desc is not None:
         desc += f'-{opts.desc}'
+    
+    console = rich.get_console()
+    console._force_terminal = True
     # Launch.
     print('==> launch training')
     launch_training(c=c, desc=desc, outdir=opts.outdir, dry_run=opts.dry_run)

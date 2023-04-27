@@ -6,22 +6,19 @@
 # distribution of this software and related documentation without an express
 # license agreement from NVIDIA CORPORATION & AFFILIATES is strictly prohibited.
 
-import pathlib
 import argparse
-
-import torch
-
+import pathlib
 import random
-import numpy as np
-import matplotlib.pyplot as plt
-from sklearn import manifold, datasets
-
-from PIL import Image
-from tqdm import tqdm
-from sklearn.manifold import TSNE 
-
 
 import clip
+import matplotlib.pyplot as plt
+import numpy as np
+import torch
+from PIL import Image
+from rich.progress import track
+from sklearn import datasets, manifold
+from sklearn.manifold import TSNE
+
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Preprocess rendered images into clip image features.')
@@ -88,7 +85,7 @@ if __name__ == '__main__':
     model, preprocess = clip.load("ViT-B/32", device=device)
     dataset = ImageDataset(args.dataset_folder, transform=preprocess)
 
-    for images, path in tqdm(dataset):
+    for images, path in track(dataset):
         with torch.no_grad():
             features = model.encode_image(images.to(device))
             features = features.cpu().numpy()

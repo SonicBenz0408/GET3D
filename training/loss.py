@@ -8,6 +8,7 @@
 
 import numpy as np
 import torch
+
 from torch_utils import training_stats
 from torch_utils.ops import conv2d_gradfix
 
@@ -203,7 +204,7 @@ class StyleGAN2Loss(Loss):
             with torch.autograd.profiler.record_function(name + '_forward'):
                 # Optimize for the real image
                 real_img_tmp = real_img.detach().requires_grad_(phase in ['Dreg', 'Dboth'])
-                real_logits = self.run_D(real_img_tmp, real_c[:, 2:], )
+                real_logits = self.run_D(real_img_tmp, real_c[:, :2])
                 real_logits, real_logits_c, real_logits_mask, real_logits_mask_c = real_logits
 
                 training_stats.report('Loss/scores/real', real_logits)

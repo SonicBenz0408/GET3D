@@ -8,14 +8,16 @@
 '''
 Utily functions for the inference
 '''
-import torch
-import numpy as np
 import os
-import PIL.Image
-from training.utils.utils_3d import save_obj, savemeshtes2
-import imageio
+
 import cv2
-from tqdm import tqdm
+import imageio
+import numpy as np
+import PIL.Image
+import torch
+from rich.progress import track
+
+from training.utils.utils_3d import save_obj, savemeshtes2
 
 
 def save_image_grid(img, fname, drange, grid_size):
@@ -292,7 +294,7 @@ def save_geo_for_inference(G_ema, run_dir):
         os.makedirs(surface_point_dir, exist_ok=True)
         n_gen = 1500 * 5  # We generate 5x of test set here
         i_mesh = 0
-        for i_gen in tqdm(range(n_gen)):
+        for i_gen in track(range(n_gen)):
             geo_z = torch.randn(1, G_ema.z_dim, device=G_ema.device)
             generated_mesh = G_ema.generate_3d_mesh(
                 geo_z=geo_z, tex_z=None, c=None, truncation_psi=truncation_phi,

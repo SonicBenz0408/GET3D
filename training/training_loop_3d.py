@@ -8,19 +8,20 @@
 
 """Main training loop."""
 
-import os
 import copy
 import json
-import numpy as np
-import torch
-import dnnlib
-from torch_utils import misc
-from torch_utils import training_stats
-from torch_utils.ops import conv2d_gradfix
-from torch_utils.ops import grid_sample_gradfix
-from metrics import metric_main
-import nvdiffrast.torch as dr
+import os
 import time
+
+import numpy as np
+import nvdiffrast.torch as dr
+import torch
+from rich.progress import track
+
+import dnnlib
+from metrics import metric_main
+from torch_utils import misc, training_stats
+from torch_utils.ops import conv2d_gradfix, grid_sample_gradfix
 from training.inference_utils import save_image_grid, save_visualization
 
 
@@ -109,9 +110,7 @@ def training_loop(
         detect_anomaly=False,
         resume_pretrain=None,
 ):
-    from torch_utils.ops import upfirdn2d
-    from torch_utils.ops import bias_act
-    from torch_utils.ops import filtered_lrelu
+    from torch_utils.ops import bias_act, filtered_lrelu, upfirdn2d
     upfirdn2d._init()
     bias_act._init()
     filtered_lrelu._init()
@@ -288,7 +287,8 @@ def training_loop(
             
         optim_step += 1
         # Execute training phases.
-        for phase, phase_gen_z, phase_gen_c in zip(phases, all_gen_z, all_gen_c):
+        
+        for phase, phase_gen_z, phase_gen_c in track(zip(phases, all_gen_z, all_gen_c), total=len(phases), description="Training Phase..."):
             if batch_idx % phase.interval != 0:
                 continue
             if phase.start_event is not None:
@@ -296,12 +296,7 @@ def training_loop(
             # Accumulate gradients.
             phase.opt.zero_grad(set_to_none=False)
             phase.module.requires_grad_(True)
-            
-            try:
-                phase.module.clip_model.requires_grad_(False)
-            except:
-                print(phase)
-
+        
             for real_img, real_c, gen_z, gen_c in zip(phase_real_img, phase_real_c, phase_gen_z, phase_gen_c):
                 loss.accumulate_gradients(
                     phase=phase.name, real_img=real_img, real_c=real_c, gen_z=gen_z, gen_c=gen_c,
@@ -332,6 +327,7 @@ def training_loop(
             # Phase done.
             if phase.end_event is not None:
                 phase.end_event.record(torch.cuda.current_stream(device))
+
         # Update G_ema.
         with torch.autograd.profiler.record_function('Gema'):
             ema_nimg = ema_kimg * 1000

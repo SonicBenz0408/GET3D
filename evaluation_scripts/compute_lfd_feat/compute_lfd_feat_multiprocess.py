@@ -7,15 +7,16 @@
 # license agreement from NVIDIA CORPORATION & AFFILIATES is strictly prohibited.
 
 import argparse
-import numpy as np
-import torch
 import os
 import random
-from tqdm import tqdm
-from pathlib import Path
 from multiprocessing import Pool
+from pathlib import Path
+
 import kaolin as kal
+import numpy as np
 import point_cloud_utils as pcu
+import torch
+from rich.progress import track
 
 
 def seed_everything(seed):
@@ -44,8 +45,9 @@ def load_mesh_v(mesh_name, normalized_scale=0.9):
     return mesh_v1, mesh_f1
 
 
-from lfd_me import MeshEncoder
 from functools import partial
+
+from lfd_me import MeshEncoder
 
 
 def align_mesh_feature(mesh_name, align_feature_sample_folder):
@@ -80,12 +82,12 @@ def compute_lfd_feture(sample_pcs, n_process, save_path):
     N_process = n_process
     path_list = []
     if n_process == 0:
-        for i in tqdm(range(len(sample_pcs))):
+        for i in track(range(len(sample_pcs))):
             align_mesh_feature(sample_pcs[i], align_feature_sample_folder)
         exit()
     print('==> multi process')
     pool = Pool(N_process)
-    for x in tqdm(
+    for x in track(
             pool.imap_unordered(partial(align_mesh_feature, align_feature_sample_folder=align_feature_sample_folder), sample_pcs),
             total=len(sample_pcs)):
         path_list.append(x)
