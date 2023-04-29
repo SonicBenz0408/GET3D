@@ -110,12 +110,12 @@ def init_dataset_kwargs(data, opt=None):
     try:
         if opt.use_shapenet_split:
             dataset_kwargs = dnnlib.EasyDict(
-                class_name='training.dataset.MultiClassImageFolderDataset',
+                class_name='training.dataset.ImageFolderDataset',
                 path=data, use_labels=True, max_size=None, xflip=False,
                 resolution=opt.img_res,
-                # data_camera_mode=opt.data_camera_mode,
+                data_camera_mode=opt.data_camera_mode,
                 add_camera_cond=opt.add_camera_cond,
-                # camera_path=opt.camera_path,
+                camera_path=opt.camera_path,
                 split='test' if opt.inference_vis else 'train',
             )
         else:

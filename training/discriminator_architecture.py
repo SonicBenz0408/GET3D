@@ -500,9 +500,9 @@ class DiscriminatorEpilogue(torch.nn.Module):
         x = self.out(x)
 
         # Conditioning.
-        # if self.cmap_dim > 0:
-        #     misc.assert_shape(cmap, [None, self.cmap_dim])
-        #     x = (x * cmap).sum(dim=1, keepdim=True) * (1 / np.sqrt(self.cmap_dim))
+        if self.cmap_dim > 0:
+            misc.assert_shape(cmap, [None, self.cmap_dim])
+            x = (x * cmap).sum(dim=1, keepdim=True) * (1 / np.sqrt(self.cmap_dim))
 
         assert x.dtype == dtype
         return x

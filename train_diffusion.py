@@ -171,7 +171,7 @@ def parse_comma_separated_list(s):
 # Misc settings.
 @click.option('--desc', help='String to include in result dir name', metavar='STR', type=str)
 @click.option('--num_steps', help='Total training duration', metavar='INT', type=click.IntRange(min=1), default=100000, show_default=True)
-@click.option('--snap', help='How often to save snapshots', metavar='TICKS', type=click.IntRange(min=1), default=50, show_default=True)  ###
+@click.option('--snap', help='How often to save snapshots', metavar='TICKS', type=click.IntRange(min=1), default=500, show_default=True)  ###
 @click.option('--seed', help='Random seed', metavar='INT', type=click.IntRange(min=0), default=0, show_default=True)
 @click.option('--fp32', help='Disable mixed-precision', metavar='BOOL', type=bool, default=True, show_default=True)  # Let's use fp32 all the case without clamping
 @click.option('--nobench', help='Disable cuDNN benchmarking', metavar='BOOL', type=bool, default=False, show_default=True)

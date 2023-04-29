@@ -320,7 +320,7 @@ class ImageFolderDataset(Dataset):
             mask = np.ones(1)
         img = resize_img.transpose(2, 0, 1)
         background = np.zeros_like(img)
-        img = img * (mask > 0).astype(np.float) + background * (1 - (mask > 0).astype(np.float))
+        img = img * (mask > 0).astype(np.float64) + background * (1 - (mask > 0).astype(np.float64))
         return np.ascontiguousarray(img), condinfo, np.ascontiguousarray(mask)
 
     def _load_raw_image(self, raw_idx):
@@ -340,7 +340,7 @@ class MultiClassImageFolderDataset(Dataset):
     def __init__(
             self,
             path,  # Path to directory or zip.
-            chosen_classes=["chair"],
+            chosen_classes=["car"],
             resolution=None,  # Ensure specific resolution, None = highest available.
             # data_camera_mode='shapenet_car',
             add_camera_cond=False,
@@ -396,16 +396,13 @@ class MultiClassImageFolderDataset(Dataset):
         label = self._labels[idx]
         sub_class_idx = self._sub_class_idx_map[idx]
         img, condinfo, mask = self._sub_class_datasets[label][sub_class_idx]
-        # condinfo = np.append(condinfo, label)
-        # print(img.shape)
-        # print(condinfo.shape)
-        # print(mask.shape)
-        # raise
         return img, condinfo, mask
 
     def get_label(self, idx):
         label = self._labels[idx]
-        return label.copy()
+        sub_class_idx = self._sub_class_idx_map[idx]
+        condinfo = self._sub_class_datasets[label].get_label(sub_class_idx)
+        return condinfo
 
     def _load_raw_image(self, raw_idx):  # to be overridden by subclass
         return

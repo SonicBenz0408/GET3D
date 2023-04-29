@@ -212,12 +212,52 @@ def save_visualization(
             save_3d_shape(mesh_v_list[:n_shape], mesh_f_list[:n_shape], run_dir, cur_nimg // 100)
 
 
+def get_latent(
+        G_ema, grid_z, grid_c, run_dir, cur_nimg, grid_size, cur_tick,
+        image_snapshot_ticks=50,
+        save_gif_name=None,
+        save_all=True,
+        grid_tex_z=None,
+):
+    '''
+    Save visualization during training
+    :param G_ema: GET3D generator
+    :param grid_z: latent code for geometry latent code
+    :param grid_c: None
+    :param run_dir: path to save images
+    :param cur_nimg: current k images during training
+    :param grid_size: size of the image
+    :param cur_tick: current kicks for training
+    :param image_snapshot_ticks: current snapshot ticks
+    :param save_gif_name: the name to save if we want to export gif
+    :param save_all:  whether we want to save gif or not
+    :param grid_tex_z: the latent code for texture geenration
+    :return:
+    '''
+    with torch.no_grad():
+        G_ema.update_w_avg()
+
+        if grid_tex_z is None:
+            grid_tex_z = grid_z
+
+        ws_geo_list = []
+        ws_tex_list = []
+        for z, geo_z, c in zip(grid_tex_z, grid_z, grid_c):
+            ws_geo = G_ema.mapping_geo(geo_z, c)
+            ws_tex = G_ema.mapping(z, c)
+            ws_geo_list.append(ws_geo[0][0].cpu().numpy())
+            ws_tex_list.append(ws_tex[0][0].cpu().numpy())
+        
+        return ws_geo_list, ws_tex_list
+            
+
+
 def save_visualization_with_cond(
         G_ema, geo_diff, tex_diff, condition, grid_z, grid_c, run_dir, cur_nimg, grid_size, cur_tick,
         image_snapshot_ticks=50,
         save_gif_name=None,
         save_all=True,
-        grid_tex_z=None,
+        grid_tex_z=None
 ):
     '''
     Save visualization during training
@@ -246,28 +286,21 @@ def save_visualization_with_cond(
             images_list = []
             mesh_v_list = []
             mesh_f_list = []
-            if condition is not None:
-                for z, geo_z, c, cond in zip(grid_tex_z, grid_z, grid_c, condition):
-                    ws_geo = geo_diff.sample(cond, 1, z=geo_z)
-                    ws_tex = tex_diff.sample(torch.cat([ws_geo, cond], 1), 1, z=z)[:, 0, :]
-                    img, mask, sdf, deformation, v_deformed, mesh_v, mesh_f, gen_camera, tex_hard_mask = G_ema.generate_3d_from_latent(
-                        ws_geo, ws_tex, camera=camera)
-                    rgb_img = img[:, :3]
-                    save_img = torch.cat([rgb_img, mask.permute(0, 3, 1, 2).expand(-1, 3, -1, -1)], dim=-1).detach()
-                    images_list.append(save_img.cpu().numpy())
-                    mesh_v_list.extend([v.data.cpu().numpy() for v in mesh_v])
-                    mesh_f_list.extend([f.data.cpu().numpy() for f in mesh_f])
-            else:
-                for z, geo_z, c in zip(grid_tex_z, grid_z, grid_c):
-                    ws_geo = geo_diff.sample(1, z=geo_z)
-                    ws_tex = tex_diff.sample(1, z=z)
-                    img, mask, sdf, deformation, v_deformed, mesh_v, mesh_f, gen_camera, tex_hard_mask = G_ema.generate_3d_from_latent(
-                        ws_geo, ws_tex, camera=camera)
-                    rgb_img = img[:, :3]
-                    save_img = torch.cat([rgb_img, mask.permute(0, 3, 1, 2).expand(-1, 3, -1, -1)], dim=-1).detach()
-                    images_list.append(save_img.cpu().numpy())
-                    mesh_v_list.extend([v.data.cpu().numpy() for v in mesh_v])
-                    mesh_f_list.extend([f.data.cpu().numpy() for f in mesh_f])
+            for z, geo_z, c, cond in zip(grid_tex_z, grid_z, grid_c, condition):
+                if geo_diff != None:
+                    geo_z = geo_diff.sample(cond, 1, z=geo_z).squeeze(1)
+                elif tex_diff != None:
+                    z = tex_diff.sample(cond, 1, z=z).squeeze(1)
+
+                img, mask, sdf, deformation, v_deformed, mesh_v, mesh_f, gen_camera, img_wo_light, tex_hard_mask = G_ema.generate_3d(
+                    z=z, geo_z=geo_z, c=c, noise_mode='const',
+                    generate_no_light=True, truncation_psi=0.7, camera=camera)
+                rgb_img = img[:, :3]
+                save_img = torch.cat([rgb_img, mask.permute(0, 3, 1, 2).expand(-1, 3, -1, -1)], dim=-1).detach()
+                images_list.append(save_img.cpu().numpy())
+                mesh_v_list.extend([v.data.cpu().numpy() for v in mesh_v])
+                mesh_f_list.extend([f.data.cpu().numpy() for f in mesh_f])
+                
             images = np.concatenate(images_list, axis=0)
             if save_gif_name is None:
                 save_file_name = 'fakes'

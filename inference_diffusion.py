@@ -93,16 +93,19 @@ def inference_diff(
 
     clip_model, preprocess = clip.load('ViT-B/16', device=device)
 
-    geo_Unet = Unet1D_cond(dim=diff_ch, dim_mults=(1, 2, 4, 8), channels=1, cond_ch=1, resnet_block_groups=2).to(device)
-    geo_diffusion_model = GaussianDiffusion1D_cond(geo_Unet, seq_length=G_kwargs.w_dim, timesteps=1000, objective='pred_v').to(device)
-    tex_Unet = Unet1D_cond(dim=diff_ch, dim_mults=(1, 2, 4, 8), channels=2, cond_ch=2, resnet_block_groups=2).to(device)
-    tex_diffusion_model = GaussianDiffusion1D_cond(tex_Unet, seq_length=G_kwargs.w_dim, timesteps=1000, objective='pred_v').to(device)
+    #geo_Unet = Unet1D_cond(dim=diff_ch, dim_mults=(1, 2, 4, 8), channels=1, cond_ch=1, resnet_block_groups=2).to(device)
+    #geo_diffusion_model = GaussianDiffusion1D_cond(geo_Unet, seq_length=G_kwargs.z_dim, timesteps=1000, objective='pred_noise').to(device)
+    tex_Unet = Unet1D_cond(dim=diff_ch, dim_mults=(1, 2, 4, 8), channels=2, cond_ch=1, resnet_block_groups=2).to(device)
+    tex_diffusion_model = GaussianDiffusion1D_cond(tex_Unet, seq_length=G_kwargs.z_dim, timesteps=1000, objective='pred_noise').to(device)
+
+    #ema_geo_diffusion_model = EMA(geo_diffusion_model, beta=ema_decay, update_every=ema_update_every)
+    ema_tex_diffusion_model = EMA(tex_diffusion_model, beta=ema_decay, update_every=ema_update_every)
 
     if resume_pretrain is not None and (rank == 0):
         print('==> resume diffusion model from pretrained path %s' % (resume_pretrain))
         model_state_dict = torch.load(resume_pretrain, map_location=device)
-        geo_diffusion_model.load_state_dict(model_state_dict['geo_diff'], strict=True)
-        tex_diffusion_model.load_state_dict(model_state_dict['tex_diff'], strict=True)
+        #geo_diffusion_model.load_state_dict(model_state_dict['geo_diff'], strict=True)
+        ema_tex_diffusion_model.load_state_dict(model_state_dict['ema_tex_diff'], strict=True)
 
     if backbone_pretrain is not None and (rank == 0):
         print('==> resume backbone from pretrained path %s' % (backbone_pretrain))
@@ -111,8 +114,8 @@ def inference_diff(
 
     grid_size = (5, 5)
     n_shape = grid_size[0] * grid_size[1]
-    grid_z = torch.randn([n_shape, G_kwargs.w_dim], device=device).unsqueeze(1).split(1)  # random code for geometry
-    grid_tex_z = torch.randn([n_shape, G_kwargs.w_dim], device=device).unsqueeze(1).repeat(1, tex_diffusion_model.model.cond_ch, 1).split(1)  # random code for texture
+    grid_z = torch.randn([n_shape, G_kwargs.z_dim], device=device).split(1)  # random code for geometry
+    grid_tex_z = torch.randn([n_shape, G_kwargs.z_dim], device=device).unsqueeze(1).repeat(1, tex_diffusion_model.model.cond_ch, 1).split(1)  # random code for texture
     grid_c = torch.ones(n_shape, device=device).split(1)
     if image_cond is not None:
         print('==> use image as condition')
@@ -126,7 +129,7 @@ def inference_diff(
         cond = torch.zeros((n_shape, clip_model.visual.output_dim), device=device).unsqueeze(1).split(1)
     print('==> generate ')
     save_visualization_with_cond(
-        G_ema, geo_diffusion_model, tex_diffusion_model, cond, grid_z, grid_c, run_dir, 0, grid_size, 0,
+        G_ema, None, tex_diffusion_model, cond, grid_z, grid_c, run_dir, 0, grid_size, 0,
         save_all=False,
         grid_tex_z=grid_tex_z
     )

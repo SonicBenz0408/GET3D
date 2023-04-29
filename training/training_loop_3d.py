@@ -174,7 +174,6 @@ def training_loop(
         G.load_state_dict(model_state_dict['G'], strict=True)
         G_ema.load_state_dict(model_state_dict['G_ema'], strict=True)
         D.load_state_dict(model_state_dict['D'], strict=True)
-
     if rank == 0:
         print('Setting up augmentation...')
 
@@ -278,6 +277,7 @@ def training_loop(
             all_gen_z = [phase_gen_z.split(batch_gpu) for phase_gen_z in all_gen_z.split((batch_size // num_gpus))]
             all_gen_c = [training_set.get_label(np.random.randint(len(training_set))) for _ in
                          range(len(phases) * (batch_size // num_gpus))]
+            
             all_gen_c = torch.from_numpy(np.stack(all_gen_c)).pin_memory().to(device)
             all_gen_c = [phase_gen_c.split(batch_gpu) for phase_gen_c in all_gen_c.split(batch_size // num_gpus)]
         optim_step += 1
