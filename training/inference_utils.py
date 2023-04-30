@@ -182,7 +182,7 @@ def save_visualization(
             images_list = []
             mesh_v_list = []
             mesh_f_list = []
-            for z, geo_z, c in zip(grid_tex_z, grid_z, grid_c):
+            for z, geo_z, c in track(zip(grid_tex_z, grid_z, grid_c), total=len(grid_tex_z), description="Genreating..."):
                 img, mask, sdf, deformation, v_deformed, mesh_v, mesh_f, gen_camera, img_wo_light, tex_hard_mask = G_ema.generate_3d(
                     z=z, geo_z=geo_z, c=c, noise_mode='const',
                     generate_no_light=True, truncation_psi=0.7, camera=camera)
