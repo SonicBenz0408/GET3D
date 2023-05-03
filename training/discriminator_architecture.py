@@ -544,7 +544,7 @@ class DiscriminatorEpilogue_multi(torch.nn.Module):
         self.fc = FullyConnectedLayer(in_channels * (resolution ** 2), in_channels, activation=activation, device=device)
         self.fc_multi = FullyConnectedLayer(in_channels * (resolution ** 2), in_channels, activation=activation, device=device)
         self.out = FullyConnectedLayer(in_channels, 1 if cmap_dim == 0 else cmap_dim, device=device)
-        self.out_multi = FullyConnectedLayer(in_channels, class_num if cmap_dim == 0 else cmap_dim * class_num, device=device)
+        self.out_multi = FullyConnectedLayer(in_channels, class_num, device=device)
 
     def forward(self, x, img, cmap=None, force_fp32=False):
         misc.assert_shape(x, [None, self.in_channels, self.resolution, self.resolution])  # [NCHW]
@@ -570,9 +570,6 @@ class DiscriminatorEpilogue_multi(torch.nn.Module):
         if self.cmap_dim > 0:
             misc.assert_shape(cmap, [None, self.cmap_dim])
             d_logits = (d_logits * cmap).sum(dim=1, keepdim=True) * (1 / np.sqrt(self.cmap_dim))
-
-            c_logits = c_logits.view(c_logits.shape[0], self.class_num, self.cmap_dim)
-            c_logits = (c_logits * (cmap.unsqueeze(1).repeat(1, self.class_num, 1))).sum(dim=2, keepdim=False) * (1 / np.sqrt(self.cmap_dim))
 
         assert d_logits.dtype == dtype
         assert c_logits.dtype == dtype

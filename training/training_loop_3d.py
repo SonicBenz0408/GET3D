@@ -403,25 +403,25 @@ def training_loop(
                 torch.save(all_model_dict, snapshot_pkl.replace('.pkl', '.pt'))
 
         # Evaluate metrics.
-        if (snapshot_data is not None) and (len(metrics) > 0):
-            if rank == 0:
-                print('Evaluating metrics...')
-            with torch.no_grad():
-                for metric in metrics:
-                    if training_set_kwargs['split'] != 'all':
-                        if rank == 0:
-                            print('====> use validation set')
-                        training_set_kwargs['split'] = 'val'
-                    training_set_kwargs = clean_training_set_kwargs_for_metrics(training_set_kwargs)
-                    with torch.no_grad():
-                        result_dict = metric_main.calc_metric(
-                            metric=metric, G=snapshot_data['G_ema'],
-                            dataset_kwargs=training_set_kwargs, num_gpus=num_gpus, rank=rank, device=device)
-                    if rank == 0:
-                        metric_main.report_metric(result_dict, run_dir=run_dir, snapshot_pkl=snapshot_pkl)
-                    stats_metrics.update(result_dict.results)
-            if rank == 0:
-                print('==> finished evaluate metrics')
+        # if (snapshot_data is not None) and (len(metrics) > 0):
+        #     if rank == 0:
+        #         print('Evaluating metrics...')
+        #     with torch.no_grad():
+        #         for metric in metrics:
+        #             if training_set_kwargs['split'] != 'all':
+        #                 if rank == 0:
+        #                     print('====> use validation set')
+        #                 training_set_kwargs['split'] = 'val'
+        #             training_set_kwargs = clean_training_set_kwargs_for_metrics(training_set_kwargs)
+        #             with torch.no_grad():
+        #                 result_dict = metric_main.calc_metric(
+        #                     metric=metric, G=snapshot_data['G_ema'],
+        #                     dataset_kwargs=training_set_kwargs, num_gpus=num_gpus, rank=rank, device=device)
+        #             if rank == 0:
+        #                 metric_main.report_metric(result_dict, run_dir=run_dir, snapshot_pkl=snapshot_pkl)
+        #             stats_metrics.update(result_dict.results)
+        #     if rank == 0:
+        #         print('==> finished evaluate metrics')
 
         # Collect statistics.
         for phase in phases:
@@ -445,8 +445,8 @@ def training_loop(
             walltime = timestamp - start_time
             for name, value in stats_dict.items():
                 stats_tfevents.add_scalar(name, value.mean, global_step=global_step, walltime=walltime)
-            for name, value in stats_metrics.items():
-                stats_tfevents.add_scalar(f'Metrics/{name}', value, global_step=global_step, walltime=walltime)
+            #for name, value in stats_metrics.items():
+            #    stats_tfevents.add_scalar(f'Metrics/{name}', value, global_step=global_step, walltime=walltime)
             stats_tfevents.flush()
         if progress_fn is not None:
             progress_fn(cur_nimg // 1000, total_kimg)
