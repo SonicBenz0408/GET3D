@@ -18,7 +18,7 @@ import dnnlib
 from metrics import metric_main
 from torch_utils import custom_ops, training_stats
 from training import inference_3d, training_loop_3d
-
+from omegaconf import OmegaConf
 
 # ----------------------------------------------------------------------------
 def subprocess_fn(rank, c, temp_dir):
@@ -70,7 +70,7 @@ def launch_training(c, desc, outdir, dry_run):
     # Print options.
     print()
     print('Training options:')
-    print(json.dumps(c, indent=2))
+    #print(json.dumps(c, indent=2))
     print()
     print(f'Output directory:    {c.run_dir}')
     print(f'Number of GPUs:      {c.num_gpus}')
@@ -93,7 +93,8 @@ def launch_training(c, desc, outdir, dry_run):
     if not os.path.exists(c.run_dir):
         os.makedirs(c.run_dir)
     with open(os.path.join(c.run_dir, 'training_options.json'), 'wt') as f:
-        json.dump(c, f, indent=2)
+        #json.dump(c, f, indent=2)
+        pass
 
     # Launch processes.
     print('Launching processes...')
@@ -214,6 +215,10 @@ def parse_comma_separated_list(s):
 @click.option('--nobench', help='Disable cuDNN benchmarking', metavar='BOOL', type=bool, default=False, show_default=True)
 @click.option('--workers', help='DataLoader worker processes', metavar='INT', type=click.IntRange(min=0), default=3, show_default=True)
 @click.option('-n', '--dry-run', help='Print training options and exit', is_flag=True)
+
+@click.option('--config', help='The YAML file of Stable Diffusion model', metavar='[PATH|URL]', type=str)
+@click.option('--sd_ckpt', help='The checkpoint of Stable Diffusion model', metavar='[PATH|URL]', type=str)
+
 def main(**kwargs):
     # Initialize config.
     print('==> start')
@@ -314,7 +319,9 @@ def main(**kwargs):
         c.G_kwargs.conv_clamp = c.D_kwargs.conv_clamp = None
     if opts.nobench:
         c.cudnn_benchmark = False
-
+    
+    c.config = OmegaConf.load(f"{opts.config}")
+    c.sd_ckpt = opts.sd_ckpt
     # Description string.
     desc = f'{opts.cfg:s}-{dataset_name:s}-gpus{c.num_gpus:d}-batch{c.batch_size:d}-gamma{c.loss_kwargs.r1_gamma:g}'
     if opts.desc is not None:

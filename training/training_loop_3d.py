@@ -22,7 +22,7 @@ from metrics import metric_main
 import nvdiffrast.torch as dr
 import time
 from training.inference_utils import save_image_grid, save_visualization
-
+from ldm.models.diffusion.ddpm import LatentDiffusion
 
 # ----------------------------------------------------------------------------
 # Function to save the real image for discriminator training
@@ -75,6 +75,27 @@ def clean_training_set_kwargs_for_metrics(training_set_kwargs):
     return training_set_kwargs
 
 
+def load_model_from_config(config, ckpt, verbose=False):
+    print(f"Loading model from {ckpt}")
+    print(config)
+    pl_sd = torch.load(ckpt, map_location="cpu")
+    if "global_step" in pl_sd:
+        print(f"Global Step: {pl_sd['global_step']}")
+    sd = pl_sd["state_dict"]
+    model = LatentDiffusion(**config.get("params", dict()))
+    m, u = model.load_state_dict(sd, strict=False)
+    if len(m) > 0 and verbose:
+        print("missing keys:")
+        print(m)
+    if len(u) > 0 and verbose:
+        print("unexpected keys:")
+        print(u)
+
+    model.cuda()
+    model.eval()
+    return model
+
+
 # ----------------------------------------------------------------------------
 def training_loop(
         run_dir='.',  # Output directory.
@@ -106,6 +127,8 @@ def training_loop(
         inference_vis=False,  # Whether running inference or not.
         detect_anomaly=False,
         resume_pretrain=None,
+        config=None,
+        sd_ckpt=None
 ):
     from torch_utils.ops import upfirdn2d
     from torch_utils.ops import bias_act
@@ -169,6 +192,8 @@ def training_loop(
         G.load_state_dict(model_state_dict['G'], strict=True)
         G_ema.load_state_dict(model_state_dict['G_ema'], strict=True)
         D.load_state_dict(model_state_dict['D'], strict=True)
+
+    SD_model = load_model_from_config(config, f"{sd_ckpt}")
 
     if rank == 0:
         print('Setting up augmentation...')
