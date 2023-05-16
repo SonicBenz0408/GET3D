@@ -165,3 +165,4 @@ dataset
 cache
 pretrained_model
 save_inference_results
+test

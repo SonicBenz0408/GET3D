@@ -374,7 +374,7 @@ class MultiClassImageFolderDataset(Dataset):
     def __init__(
             self,
             path,  # Path to directory or zip.
-            chosen_classes=["chair"],
+            chosen_classes=["car"],
             resolution=None,  # Ensure specific resolution, None = highest available.
             # data_camera_mode='shapenet_car',
             add_camera_cond=False,

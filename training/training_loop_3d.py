@@ -23,6 +23,7 @@ import nvdiffrast.torch as dr
 import time
 from training.inference_utils import save_image_grid, save_visualization
 from ldm.models.diffusion.ddpm import LatentDiffusion
+from ldm.models.diffusion.dpm_solver import DPMSolverSampler
 
 # ----------------------------------------------------------------------------
 # Function to save the real image for discriminator training
@@ -77,12 +78,11 @@ def clean_training_set_kwargs_for_metrics(training_set_kwargs):
 
 def load_model_from_config(config, ckpt, verbose=False):
     print(f"Loading model from {ckpt}")
-    print(config)
     pl_sd = torch.load(ckpt, map_location="cpu")
     if "global_step" in pl_sd:
         print(f"Global Step: {pl_sd['global_step']}")
     sd = pl_sd["state_dict"]
-    model = LatentDiffusion(**config.get("params", dict()))
+    model = LatentDiffusion(**config.model.get("params", dict()))
     m, u = model.load_state_dict(sd, strict=False)
     if len(m) > 0 and verbose:
         print("missing keys:")
@@ -194,6 +194,8 @@ def training_loop(
         D.load_state_dict(model_state_dict['D'], strict=True)
 
     SD_model = load_model_from_config(config, f"{sd_ckpt}")
+    SD_model = SD_model.to(device)
+    SD_sampler = DPMSolverSampler(SD_model)
 
     if rank == 0:
         print('Setting up augmentation...')
