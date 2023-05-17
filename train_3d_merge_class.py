@@ -75,7 +75,7 @@ def launch_training(c, desc, outdir, dry_run):
     print(f'Output directory:    {c.run_dir}')
     print(f'Number of GPUs:      {c.num_gpus}')
     print(f'Batch size:          {c.batch_size} images')
-    print(f'Training duration:   {c.total_kimg} kimg')
+    print(f'Training duration:   {c.train_num_steps} steps')
     print(f'Dataset path:        {c.training_set_kwargs.path}')
     print(f'Dataset size:        {c.training_set_kwargs.max_size} images')
     print(f'Dataset resolution:  {c.training_set_kwargs.resolution}')
@@ -207,9 +207,9 @@ def parse_comma_separated_list(s):
 # Misc settings.
 @click.option('--desc', help='String to include in result dir name', metavar='STR', type=str)
 @click.option('--metrics', help='Quality metrics', metavar='[NAME|A,B,C|none]', type=parse_comma_separated_list, default='fid50k', show_default=True)
-@click.option('--kimg', help='Total training duration', metavar='KIMG', type=click.IntRange(min=1), default=20000, show_default=True)
+@click.option('--num_steps', help='Total training duration', metavar='INT', type=click.IntRange(min=1), default=300000, show_default=True)
 @click.option('--tick', help='How often to print progress', metavar='KIMG', type=click.IntRange(min=1), default=1, show_default=True)  ##
-@click.option('--snap', help='How often to save snapshots', metavar='TICKS', type=click.IntRange(min=1), default=50, show_default=True)  ###
+@click.option('--snap', help='How often to save snapshots', metavar='TICKS', type=click.IntRange(min=1), default=10000, show_default=True)  ###
 @click.option('--seed', help='Random seed', metavar='INT', type=click.IntRange(min=0), default=0, show_default=True)
 @click.option('--fp32', help='Disable mixed-precision', metavar='BOOL', type=bool, default=True, show_default=True)  # Let's use fp32 all the case without clamping
 @click.option('--nobench', help='Disable cuDNN benchmarking', metavar='BOOL', type=bool, default=False, show_default=True)
@@ -289,19 +289,19 @@ def main(**kwargs):
     c.G_opt_kwargs.lr = (0.002 if opts.cfg == 'stylegan2' else 0.0025) if opts.glr is None else opts.glr
     c.D_opt_kwargs.lr = opts.dlr
     c.metrics = opts.metrics
-    c.total_kimg = opts.kimg
+    c.train_num_steps = opts.num_steps
     c.kimg_per_tick = opts.tick
-    c.image_snapshot_ticks = c.network_snapshot_ticks = opts.snap
+    c.image_snapshot_ticks = opts.snap
     c.random_seed = c.training_set_kwargs.random_seed = opts.seed
     c.data_loader_kwargs.num_workers = opts.workers
-    c.network_snapshot_ticks = 200
+    c.network_snapshot_ticks = opts.snap
     # Sanity checks.
     if c.batch_size % c.num_gpus != 0:
         raise click.ClickException('--batch must be a multiple of --gpus')
-    if c.batch_size % (c.num_gpus * c.batch_gpu) != 0:
-        raise click.ClickException('--batch must be a multiple of --gpus times --batch-gpu')
-    if c.batch_gpu < c.D_kwargs.epilogue_kwargs.mbstd_group_size:
-        raise click.ClickException('--batch-gpu cannot be smaller than --mbstd')
+    # if c.batch_size % (c.num_gpus * c.batch_gpu) != 0:
+    #     raise click.ClickException('--batch must be a multiple of --gpus times --batch-gpu')
+    # if c.batch_gpu < c.D_kwargs.epilogue_kwargs.mbstd_group_size:
+    #     raise click.ClickException('--batch-gpu cannot be smaller than --mbstd')
     if any(not metric_main.is_valid_metric(metric) for metric in c.metrics):
         raise click.ClickException(
             '\n'.join(['--metrics can only contain the following values:'] + metric_main.list_valid_metrics()))

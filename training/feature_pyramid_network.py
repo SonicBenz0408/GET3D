@@ -31,7 +31,10 @@ class ResBlock(nn.Module):
         self.conv2 = nn.Conv2d(hidden_size, out_size, 3, padding=1, bias=False)
         self.batchnorm1 = nn.BatchNorm2d(hidden_size)
         self.batchnorm2 = nn.BatchNorm2d(out_size)
-        self.downsample = nn.Conv2d(in_size, out_size, 1, stride=1, bias=False)
+        self.downsample = nn.Sequential(
+            nn.Conv2d(in_size, out_size, 1, stride=2, bias=False),
+            nn.BatchNorm2d(out_size)
+        )
 
     def convblock(self, x):
         x = F.relu(self.batchnorm1(self.conv1(x)))
@@ -39,7 +42,9 @@ class ResBlock(nn.Module):
         return x
    
     def forward(self, x):
-        return self.downsample(x) + self.convblock(x) # skip connection
+        down = self.downsample(x)
+        conv = self.convblock(x)
+        return down + conv # skip connection
 
 
 class FPN(nn.Module):
@@ -49,13 +54,16 @@ class FPN(nn.Module):
         self.fpn_blocks = []
         self.forward_blocks = []
         for i in range(len(channel_list)-1):
-            self.fpn_blocks.append(ReductionAndUpsample(channel_list[i], channel_list[i+1], init_dim * (i+1), init_dim * (i+2)))
+            self.fpn_blocks.append(ReductionAndUpsample(channel_list[i], channel_list[i+1], 2 ** int(math.log2(init_dim)+i), 2 ** int(math.log2(init_dim)+i+1)))
             self.forward_blocks.append(nn.Conv2d(channel_list[i+1], channel_list[i+1], kernel_size=3, stride=1, padding=1))
         
+        self.fpn_blocks = nn.ModuleList(self.fpn_blocks)
+        self.forward_blocks = nn.ModuleList(self.forward_blocks)
+
     def forward(self, feature_list):
         in_features = feature_list.pop(0)
         for i in range(len(self.fpn_blocks)):
-            in_features = self.forward_blocks[i](self.fpn_blocks[i] + in_features)
+            in_features = self.forward_blocks[i](self.fpn_blocks[i](in_features) + feature_list.pop(0))
         
         out_features = in_features
 
@@ -70,8 +78,28 @@ class SDFeatureExtractor(nn.Module):
         self.layers = []
         
         channel_length = len(channel_list)
-        for i in range(math.log2(factor)):
+        for i in range(int(math.log2(factor))):
             self.layers.append(ResBlock(channel_list[channel_length-i-1], channel_list[channel_length-i-2], channel_list[channel_length-i-2]))
         
+        self.layers = nn.Sequential(*self.layers)
+
+        self.pooling = nn.AdaptiveAvgPool2d((1, 1))
+
+        self.mlp_geo = nn.Sequential(
+            nn.Linear(channel_list[0], out_dim)
+        )
+
+        self.mlp_tex = nn.Sequential(
+            nn.Linear(channel_list[0], out_dim)
+        )
+
+    def forward(self, feature_list):
+        out = self.fpn(feature_list)
+        out = self.layers(out)
+        out = self.pooling(out)
+        out = out.view(out.shape[0], -1)
+        out_geo, out_tex = self.mlp_geo(out), self.mlp_tex(out)
+
+        return out_geo, out_tex
 
         

@@ -16,6 +16,7 @@ from training.utils.utils_3d import save_obj, savemeshtes2
 import imageio
 import cv2
 from tqdm import tqdm
+import torch.nn.functional as F
 
 
 def save_image_grid(img, fname, drange, grid_size):
@@ -205,6 +206,81 @@ def save_visualization(
             camera_img_list.append(img)
         if save_gif_name is None:
             save_gif_name = f'fakes_{cur_nimg // 1000:06d}.gif'
+        if save_all:
+            imageio.mimsave(os.path.join(run_dir, save_gif_name), camera_img_list)
+        n_shape = 10  # we only save 10 shapes to check performance
+        if cur_tick % min((image_snapshot_ticks * 20), 100) == 0:
+            save_3d_shape(mesh_v_list[:n_shape], mesh_f_list[:n_shape], run_dir, cur_nimg // 100)
+
+
+def save_visualization_sd(
+        G_ema, sd_model, feature_extractor, grid_images, grid_c, grid_t_enc, run_dir, cur_nimg, grid_size, cur_tick,
+        image_snapshot_ticks=50,
+        save_gif_name=None,
+        save_all=True,
+        grid_tex_z=None,
+):
+    '''
+    Save visualization during training
+    :param G_ema: GET3D generator
+    :param grid_z: latent code for geometry latent code
+    :param grid_c: None
+    :param run_dir: path to save images
+    :param cur_nimg: current k images during training
+    :param grid_size: size of the image
+    :param cur_tick: current kicks for training
+    :param image_snapshot_ticks: current snapshot ticks
+    :param save_gif_name: the name to save if we want to export gif
+    :param save_all:  whether we want to save gif or not
+    :param grid_tex_z: the latent code for texture geenration
+    :return:
+    '''
+    with torch.no_grad():
+        G_ema.update_w_avg()
+        camera_list = G_ema.synthesis.generate_rotate_camera_list(n_batch=grid_images[0].shape[0])
+        camera_img_list = []
+        if not save_all:
+            camera_list = [camera_list[4]]  # we only save one camera for this
+        for i_camera, camera in enumerate(camera_list):
+            images_list = []
+            mesh_v_list = []
+            mesh_f_list = []
+            for image, c, t_enc in zip(grid_images, grid_c, grid_t_enc):
+                init_latents = sd_model.get_first_stage_encoding(sd_model.encode_first_stage(F.interpolate(image, size=(512, 512))))
+                _, unet_features = sd_model.model.diffusion_model(init_latents, t_enc, c)
+
+                ws_geo, ws_tex = feature_extractor(unet_features)
+                ws_geo, ws_tex = ws_geo.unsqueeze(1).repeat([1, G_ema.num_ws_geo, 1]), ws_tex.unsqueeze(1).repeat([1, G_ema.num_ws, 1])
+
+                img, mask, sdf, syn_camera, deformation, v_deformed, mesh_v, mesh_f, mask_pyramid, _, _ = G_ema.synthesis(
+                    ws=ws_tex, update_emas=False,
+                    return_shape=True,
+                    return_mask=True,
+                    ws_geo=ws_geo,
+                )
+                rgb_img = img[:, :3]
+                save_img = torch.cat([rgb_img, mask.permute(0, 3, 1, 2).expand(-1, 3, -1, -1)], dim=-1).detach()
+                images_list.append(save_img.cpu().numpy())
+                mesh_v_list.extend([v.data.cpu().numpy() for v in mesh_v])
+                mesh_f_list.extend([f.data.cpu().numpy() for f in mesh_f])
+            images = np.concatenate(images_list, axis=0)
+            if save_gif_name is None:
+                save_file_name = 'fakes'
+            else:
+                save_file_name = 'fakes_%s' % (save_gif_name.split('.')[0])
+            if save_all:
+                img = save_image_grid(
+                    images, None,
+                    drange=[-1, 1], grid_size=grid_size)
+            else:
+                img = save_image_grid(
+                    images, os.path.join(
+                        run_dir,
+                        f'{save_file_name}_{cur_nimg // 1000:06d}_{i_camera:02d}.png'),
+                    drange=[-1, 1], grid_size=grid_size)
+            camera_img_list.append(img)
+        if save_gif_name is None:
+            save_gif_name = f'fakes_{cur_nimg:06d}.gif'
         if save_all:
             imageio.mimsave(os.path.join(run_dir, save_gif_name), camera_img_list)
         n_shape = 10  # we only save 10 shapes to check performance

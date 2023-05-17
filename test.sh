@@ -1,0 +1,1 @@
+python test.py --img ../../data/ShapeNet/render/car/img/02958343/fffb1660a38af30ba4cf3601fb6b2442/000.png

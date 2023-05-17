@@ -732,14 +732,20 @@ class UNetModel(nn.Module):
             h = module(h, emb, context)
             hs.append(h)
         h = self.middle_block(h, emb, context)
-        for module in self.output_blocks:
+
+        unet_features = []
+        target = [1, 4, 7, 11]
+        for i, module in enumerate(self.output_blocks):
             h = th.cat([h, hs.pop()], dim=1)
             h = module(h, emb, context)
+            if i in target:
+                unet_features.append(h)
+
         h = h.type(x.dtype)
         if self.predict_codebook_ids:
             return self.id_predictor(h)
         else:
-            return self.out(h)
+            return self.out(h), unet_features
 
 
 class EncoderUNetModel(nn.Module):

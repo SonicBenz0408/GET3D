@@ -529,11 +529,14 @@ class DMTETSynthesisNetwork(torch.nn.Module):
         return img, antilias_mask, sdf, deformation, v_deformed, mesh_v, mesh_f, gen_camera, img_buffers_viz, \
                mask_pyramid, tex_hard_mask, sdf_reg_loss, return_value
 
-    def forward(self, ws, camera=None, return_shape=None, **block_kwargs):
+    def forward(self, ws, camera=None, return_shape=None, return_mask=None, **block_kwargs):
         img, antilias_mask, sdf, deformation, v_deformed, mesh_v, mesh_f, gen_camera, img_wo_light, mask_pyramid, \
         tex_hard_mask, sdf_reg_loss, render_return_value = self.generate(ws, camera, **block_kwargs)
         if return_shape:
-            return img, sdf, gen_camera, deformation, v_deformed, mesh_v, mesh_f, mask_pyramid, sdf_reg_loss, render_return_value
+            if return_mask:
+                return img, antilias_mask, sdf, gen_camera, deformation, v_deformed, mesh_v, mesh_f, mask_pyramid, sdf_reg_loss, render_return_value
+            else:
+                return img, sdf, gen_camera, deformation, v_deformed, mesh_v, mesh_f, mask_pyramid, sdf_reg_loss, render_return_value
         return img, gen_camera, mask_pyramid, sdf_reg_loss, render_return_value
 
 
