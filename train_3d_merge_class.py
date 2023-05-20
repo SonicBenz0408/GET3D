@@ -6,19 +6,20 @@
 # distribution of this software and related documentation without an express
 # license agreement from NVIDIA CORPORATION & AFFILIATES is strictly prohibited.
 
-import json
 import os
 import re
 import tempfile
 
 import click
+import rich
 import torch
+from omegaconf import OmegaConf
 
 import dnnlib
 from metrics import metric_main
 from torch_utils import custom_ops, training_stats
 from training import inference_3d, training_loop_3d
-from omegaconf import OmegaConf
+
 
 # ----------------------------------------------------------------------------
 def subprocess_fn(rank, c, temp_dir):
@@ -92,7 +93,7 @@ def launch_training(c, desc, outdir, dry_run):
     print('Creating output directory...')
     if not os.path.exists(c.run_dir):
         os.makedirs(c.run_dir)
-    with open(os.path.join(c.run_dir, 'training_options.json'), 'wt') as f:
+    with open(os.path.join(c.run_dir, 'training_options.json'), 'wt'):
         #json.dump(c, f, indent=2)
         pass
 
@@ -326,6 +327,11 @@ def main(**kwargs):
     desc = f'{opts.cfg:s}-{dataset_name:s}-gpus{c.num_gpus:d}-batch{c.batch_size:d}-gamma{c.loss_kwargs.r1_gamma:g}'
     if opts.desc is not None:
         desc += f'-{opts.desc}'
+
+    # Enable rich progress bar and console
+    console = rich.get_console()
+    console._force_terminal = True
+    
     # Launch.
     print('==> launch training')
     launch_training(c=c, desc=desc, outdir=opts.outdir, dry_run=opts.dry_run)

@@ -318,7 +318,7 @@ class ImageFolderDataset(Dataset):
             raise NotImplementedError
 
         resize_img = cv2.resize(img, (self.img_size, self.img_size), interpolation=cv2.INTER_LINEAR)
-        if not mask is None:
+        if mask is not None:
             mask = cv2.resize(mask, (self.img_size, self.img_size), interpolation=cv2.INTER_NEAREST)  ########
         else:
             mask = np.ones(1)

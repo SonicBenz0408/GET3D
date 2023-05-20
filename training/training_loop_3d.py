@@ -8,28 +8,33 @@
 
 """Main training loop."""
 
-import os
 import copy
 import json
-import numpy as np
-import torch
-import dnnlib
-from clip import clip
-from tqdm import tqdm
-from torch_utils import misc
-from torch_utils import training_stats
-from torch_utils.ops import conv2d_gradfix
-from torch_utils.ops import grid_sample_gradfix
-from torchvision.transforms import Normalize
-import torch.nn.functional as F
-from metrics import metric_main
-import nvdiffrast.torch as dr
+import os
 import time
-from training.inference_utils import save_image_grid, save_visualization_sd
-from ldm.models.diffusion.ddpm import LatentDiffusion
+
+import dnnlib
+import numpy as np
+import nvdiffrast.torch as dr
+import torch
+import torch.nn.functional as F
+from clip import clip
 from ldm.models.diffusion.ddim import DDIMSampler
+from ldm.models.diffusion.ddpm import LatentDiffusion
+from metrics import metric_main
+from rich.progress import Progress
+from torch_utils import misc, training_stats
+from torch_utils.ops import conv2d_gradfix, grid_sample_gradfix
+from torchvision.transforms import Normalize
+from tqdm import tqdm
+from transformers import logging
+
 from training.feature_pyramid_network import SDFeatureExtractor
+from training.inference_utils import save_image_grid, save_visualization_sd
 from training.sample_camera_distribution import create_camera_from_angle
+
+logging.set_verbosity_error()
+
 
 # ----------------------------------------------------------------------------
 # Function to save the real image for discriminator training
@@ -105,9 +110,15 @@ def transform(imgs, W, H):
     return F.interpolate(imgs, size=(W, H))
 
 normalize = Normalize([0.48145466, 0.4578275, 0.40821073], [0.26862954, 0.26130258, 0.27577711])
-def clip_preprocess(imgs, res=224):
+def clip_preprocess(imgs, masks, res=224):
     imgs = F.interpolate(imgs, size=(res, res), mode="bicubic")
-    imgs = torch.stack([normalize(img) for img in imgs])
+    masks = F.interpolate(masks.unsqueeze(1), size=(res, res), mode="bicubic").squeeze()
+    all_img = []
+    for img, mask in zip(imgs, masks):
+        background = torch.randn_like(img).to(imgs.device)
+        img = img * (mask > 0).to(img.dtype) + background * (1 - (mask > 0).to(img.dtype))
+        all_img.append(img)
+    imgs = torch.stack(all_img)
     return imgs
 # ----------------------------------------------------------------------------
 def training_loop(
@@ -144,15 +155,13 @@ def training_loop(
         config=None,
         sd_ckpt=None
 ):
-    from torch_utils.ops import upfirdn2d
-    from torch_utils.ops import bias_act
-    from torch_utils.ops import filtered_lrelu
+    from torch_utils.ops import bias_act, filtered_lrelu, upfirdn2d
     upfirdn2d._init()
     bias_act._init()
     filtered_lrelu._init()
     if num_gpus > 1:
         torch.distributed.barrier()
-    start_time = time.time()
+    time.time()
     device = torch.device('cuda', rank)
     np.random.seed(random_seed * num_gpus + rank)
     torch.manual_seed(random_seed * num_gpus + rank)
@@ -229,9 +238,6 @@ def training_loop(
     G_ema.mapping_geo.requires_grad_(True)
     G_ema.mapping.requires_grad_(True)
     
-    feature_extractor_opt = torch.optim.Adam(params=feature_extractor.parameters(), lr=1e-4, betas=[0, 0.99])
-    mapping_network_geo_opt = torch.optim.Adam(params=G_ema.mapping_geo.parameters(), lr=2e-5, betas=[0, 0.99])
-    mapping_network_tex_opt = torch.optim.Adam(params=G_ema.mapping.parameters(), lr=2e-5, betas=[0, 0.99])
     
     if rank == 0:
         print('Setting up augmentation...')
@@ -248,7 +254,6 @@ def training_loop(
         print('Setting up training phases...')
 
     grid_size = None
-    grid_z = None
     grid_c = None
 
     if rank == 0:
@@ -276,12 +281,18 @@ def training_loop(
     # Training Iterations
     step = 0
     cur_nimg = resume_kimg * 1000
-
+    
+    feature_extractor_opt = torch.optim.Adam(params=feature_extractor.parameters(), lr=1e-4, betas=[0, 0.99])
+    mapping_network_geo_opt = torch.optim.Adam(params=G_ema.mapping_geo.parameters(), lr=2e-5, betas=[0, 0.99])
+    mapping_network_tex_opt = torch.optim.Adam(params=G_ema.mapping.parameters(), lr=2e-5, betas=[0, 0.99])
+    
+    criterion_clip = torch.nn.CosineEmbeddingLoss()
     loss_log = os.path.join(run_dir, f'loss.txt')
     with open(loss_log, 'w') as f:
         pass
 
-    with tqdm(initial=step, total=train_num_steps) as pbar:
+    with Progress() as progress:
+        task = progress.add_task("Training...", total=train_num_steps)
         
         c = SD_model.get_learned_conditioning(batch_size * [""])
         t_enc = torch.tensor([0], device=device).expand(batch_size)
@@ -297,13 +308,14 @@ def training_loop(
 
             # Fetch training data.
             with torch.autograd.profiler.record_function('data_fetch'):
-                real_img, real_camera, _ = next(training_set_iterator)
+                real_img, real_camera, real_mask = next(training_set_iterator)
                 real_img = (real_img.to(device).to(torch.float32) / 127.5 - 1)
                 rot = real_camera[:, 0:1].repeat(1, G_ema.synthesis.n_views).reshape((batch_size * G_ema.synthesis.n_views, 1)).to(device)
                 ele = real_camera[:, 1:2].repeat(1, G_ema.synthesis.n_views).reshape((batch_size * G_ema.synthesis.n_views, 1)).to(device)
                 world2cam_matrix, forward_vector, camera_origin, rotation_angle, elevation_angle = create_camera_from_angle(ele, rot, camera_r, device=device)
                 camera = (world2cam_matrix.reshape(batch_size, G_ema.synthesis.n_views, 4, 4), camera_origin.reshape(batch_size, G_ema.synthesis.n_views, 3), \
                     camera_r, rotation_angle, elevation_angle)
+                real_mask = real_mask.to(device).to(torch.float32)
             
             init_latents = SD_model.get_first_stage_encoding(SD_model.encode_first_stage(F.interpolate(real_img, size=(512, 512))))
             _, unet_features = SD_model.model.diffusion_model(init_latents, t_enc, c)
@@ -319,11 +331,15 @@ def training_loop(
                 ws_geo=ws_geo,
                 camera=camera
             )
+            gen_img, gen_mask = img[:, :training_set.num_channels, :, :], img[:, training_set.num_channels, :, :]
             
-            ori_img = clip_preprocess(real_img)
-            gen_img = clip_preprocess(img[:, :training_set.num_channels, :, :])
+            ori_clip_img = clip_preprocess(real_img, real_mask)
+            gen_clip_img = clip_preprocess(gen_img, gen_mask)
+            
+            ori_clip_feature = clip_model.encode_image(ori_clip_img)
+            gen_clip_feature =  clip_model.encode_image(gen_clip_img)
 
-            loss_clip = torch.nn.functional.cosine_embedding_loss(clip_model.encode_image(ori_img), clip_model.encode_image(gen_img), torch.ones(ori_img.shape[0], device=device))
+            loss_clip = criterion_clip(ori_clip_feature, gen_clip_feature, torch.ones(ori_clip_img.shape[0]).to(device))
 
             feature_extractor_opt.zero_grad()
             mapping_network_geo_opt.zero_grad()
@@ -358,7 +374,7 @@ def training_loop(
             with open(loss_log, 'a') as f:
                 f.write(f'CLIP_loss: {loss_clip.item():.4f}\n')
 
-            pbar.update(1)
+            progress.update(task, advance=1)
 
     # Done.
     if rank == 0:
