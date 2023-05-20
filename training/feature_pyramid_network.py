@@ -8,6 +8,7 @@ import math
 # [N, 640, 32, 32]
 # [N, 320, 64, 64]
 
+
 class ReductionAndUpsample(nn.Module):
     def __init__(self, in_channel, out_channel, in_dim, out_dim):
         super().__init__()
@@ -70,8 +71,14 @@ class FPN(nn.Module):
         return out_features
 
 
+def weights_init(m):
+    if isinstance(m, nn.Linear):
+        torch.nn.init.xavier_uniform_(m.weight)
+        if m.bias is not None:
+            torch.nn.init.zeros_(m.bias)
+
 class SDFeatureExtractor(nn.Module):
-    def __init__(self, channel_list, out_dim=512, init_dim=8, factor=8):
+    def __init__(self, channel_list, out_dim=512, init_dim=8, factor=8, num_layers=8):
         super().__init__()
         
         self.fpn = FPN(channel_list=channel_list, init_dim=init_dim)
@@ -85,21 +92,34 @@ class SDFeatureExtractor(nn.Module):
 
         self.pooling = nn.AdaptiveAvgPool2d((1, 1))
 
-        self.mlp_geo = nn.Sequential(
-            nn.Linear(channel_list[0], out_dim)
-        )
+        self.out_layer = nn.Linear(channel_list[0], out_dim)
+        self.out_layer.apply(weights_init)
 
-        self.mlp_tex = nn.Sequential(
-            nn.Linear(channel_list[0], out_dim)
-        )
+        # self.mlp_geo = [nn.Linear(channel_list[0], out_dim)]
+        # self.mlp_tex = [nn.Linear(channel_list[0], out_dim)]
+            
+        # for i in range(num_layers):
+        #     self.mlp_geo.append(nn.LeakyReLU(0.2, inplace=True))
+        #     self.mlp_geo.append(nn.Linear(out_dim, out_dim))
+        #     self.mlp_tex.append(nn.LeakyReLU(0.2, inplace=True))
+        #     self.mlp_tex.append(nn.Linear(out_dim, out_dim))
+
+        # self.mlp_geo = nn.Sequential(*self.mlp_geo)
+        # self.mlp_tex = nn.Sequential(*self.mlp_tex)
+        
+        # self.mlp_geo.apply(weights_init)
+        # self.mlp_tex.apply(weights_init)
 
     def forward(self, feature_list):
         out = self.fpn(feature_list)
         out = self.layers(out)
         out = self.pooling(out)
         out = out.view(out.shape[0], -1)
-        out_geo, out_tex = self.mlp_geo(out), self.mlp_tex(out)
+        out = self.out_layer(out)
 
-        return out_geo, out_tex
+        return out
+        # out_geo, out_tex = self.mlp_geo(out), self.mlp_tex(out)
+
+        # return out_geo, out_tex
 
         

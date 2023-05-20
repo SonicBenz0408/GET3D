@@ -219,6 +219,7 @@ def save_visualization_sd(
         save_gif_name=None,
         save_all=True,
         grid_tex_z=None,
+        grid_dummy_c=None,
 ):
     '''
     Save visualization during training
@@ -241,23 +242,30 @@ def save_visualization_sd(
         camera_img_list = []
         if not save_all:
             camera_list = [camera_list[4]]  # we only save one camera for this
+        if not grid_dummy_c:
+            grid_dummy_c = torch.ones(grid_images.shape[0], device="cuda").split(1)
         for i_camera, camera in enumerate(camera_list):
             images_list = []
             mesh_v_list = []
             mesh_f_list = []
-            for image, c, t_enc in zip(grid_images, grid_c, grid_t_enc):
+            for image, c, t_enc, dummy_c in zip(grid_images, grid_c, grid_t_enc, grid_dummy_c):
                 init_latents = sd_model.get_first_stage_encoding(sd_model.encode_first_stage(F.interpolate(image, size=(512, 512))))
                 _, unet_features = sd_model.model.diffusion_model(init_latents, t_enc, c)
 
-                ws_geo, ws_tex = feature_extractor(unet_features)
-                ws_geo, ws_tex = ws_geo.unsqueeze(1).repeat([1, G_ema.num_ws_geo, 1]), ws_tex.unsqueeze(1).repeat([1, G_ema.num_ws, 1])
+                sd_features = feature_extractor(unet_features)
+                # ws_geo, ws_tex = feature_extractor(unet_features)
+                # ws_geo, ws_tex = ws_geo.unsqueeze(1).repeat([1, G_ema.num_ws_geo, 1]), ws_tex.unsqueeze(1).repeat([1, G_ema.num_ws, 1])
 
-                img, mask, sdf, syn_camera, deformation, v_deformed, mesh_v, mesh_f, mask_pyramid, _, _ = G_ema.synthesis(
-                    ws=ws_tex, update_emas=False,
-                    return_shape=True,
-                    return_mask=True,
-                    ws_geo=ws_geo,
-                )
+                img, mask, sdf, deformation, v_deformed, mesh_v, mesh_f, gen_camera, img_wo_light, tex_hard_mask = G_ema.generate_3d(
+                    z=sd_features, geo_z=sd_features, c=dummy_c, noise_mode='const',
+                    generate_no_light=True, truncation_psi=0.7, camera=camera)
+
+                # img, mask, sdf, syn_camera, deformation, v_deformed, mesh_v, mesh_f, mask_pyramid, _, _ = G_ema.synthesis(
+                #     ws=ws_tex, update_emas=False,
+                #     return_shape=True,
+                #     return_mask=True,
+                #     ws_geo=ws_geo,
+                # )
                 rgb_img = img[:, :3]
                 save_img = torch.cat([rgb_img, mask.permute(0, 3, 1, 2).expand(-1, 3, -1, -1)], dim=-1).detach()
                 images_list.append(save_img.cpu().numpy())

@@ -29,6 +29,7 @@ from training.inference_utils import save_image_grid, save_visualization_sd
 from ldm.models.diffusion.ddpm import LatentDiffusion
 from ldm.models.diffusion.ddim import DDIMSampler
 from training.feature_pyramid_network import SDFeatureExtractor
+from training.sample_camera_distribution import create_camera_from_angle
 
 # ----------------------------------------------------------------------------
 # Function to save the real image for discriminator training
@@ -225,8 +226,13 @@ def training_loop(
     SD_sampler.make_schedule(ddim_num_steps=1, ddim_eta=0.0, verbose=False)
 
     # TODO: adjust parameters
-    feature_extractor_opt = torch.optim.Adam(params=feature_extractor.parameters(), lr=1e-3, betas=[0, 0.99])
-
+    G_ema.mapping_geo.requires_grad_(True)
+    G_ema.mapping.requires_grad_(True)
+    
+    feature_extractor_opt = torch.optim.Adam(params=feature_extractor.parameters(), lr=1e-4, betas=[0, 0.99])
+    mapping_network_geo_opt = torch.optim.Adam(params=G_ema.mapping_geo.parameters(), lr=2e-5, betas=[0, 0.99])
+    mapping_network_tex_opt = torch.optim.Adam(params=G_ema.mapping.parameters(), lr=2e-5, betas=[0, 0.99])
+    
     if rank == 0:
         print('Setting up augmentation...')
 
@@ -270,30 +276,48 @@ def training_loop(
     # Training Iterations
     step = 0
     cur_nimg = resume_kimg * 1000
-    
+
+    loss_log = os.path.join(run_dir, f'loss.txt')
+    with open(loss_log, 'w') as f:
+        pass
+
     with tqdm(initial=step, total=train_num_steps) as pbar:
         
         c = SD_model.get_learned_conditioning(batch_size * [""])
         t_enc = torch.tensor([0], device=device).expand(batch_size)
-
+        dummy_c = torch.ones(batch_size, device=device)
+        camera_radius = 1.2  # align with what ww did in blender
+        camera_r = torch.zeros(batch_size * G_ema.synthesis.n_views, 1, device=device) + camera_radius
+        
         while step < train_num_steps:
             # ---------------------------------------------------------------------------------------
             feature_extractor.train()
+            G_ema.mapping_geo.train()
+            G_ema.mapping.train()
+
             # Fetch training data.
             with torch.autograd.profiler.record_function('data_fetch'):
-                real_img, _, _ = next(training_set_iterator)
+                real_img, real_camera, _ = next(training_set_iterator)
                 real_img = (real_img.to(device).to(torch.float32) / 127.5 - 1)
+                rot = real_camera[:, 0:1].repeat(1, G_ema.synthesis.n_views).reshape((batch_size * G_ema.synthesis.n_views, 1)).to(device)
+                ele = real_camera[:, 1:2].repeat(1, G_ema.synthesis.n_views).reshape((batch_size * G_ema.synthesis.n_views, 1)).to(device)
+                world2cam_matrix, forward_vector, camera_origin, rotation_angle, elevation_angle = create_camera_from_angle(ele, rot, camera_r, device=device)
+                camera = (world2cam_matrix.reshape(batch_size, G_ema.synthesis.n_views, 4, 4), camera_origin.reshape(batch_size, G_ema.synthesis.n_views, 3), \
+                    camera_r, rotation_angle, elevation_angle)
             
             init_latents = SD_model.get_first_stage_encoding(SD_model.encode_first_stage(F.interpolate(real_img, size=(512, 512))))
             _, unet_features = SD_model.model.diffusion_model(init_latents, t_enc, c)
 
-            ws_geo, ws_tex = feature_extractor(unet_features)
-            ws_geo, ws_tex = ws_geo.unsqueeze(1).repeat([1, G_ema.num_ws_geo, 1]), ws_tex.unsqueeze(1).repeat([1, G_ema.num_ws, 1])
+            # ws_geo, ws_tex = feature_extractor(unet_features)
+            sd_features = feature_extractor(unet_features)
+            # ws_geo, ws_tex = ws_geo.unsqueeze(1).repeat([1, G_ema.num_ws_geo, 1]), ws_tex.unsqueeze(1).repeat([1, G_ema.num_ws, 1])
+            ws_geo, ws_tex = G_ema.mapping_geo(z=sd_features, c=dummy_c), G_ema.mapping(z=sd_features, c=dummy_c)
 
             img, sdf, syn_camera, deformation, v_deformed, mesh_v, mesh_f, mask_pyramid, _, _ = G_ema.synthesis(
                 ws=ws_tex, update_emas=False,
                 return_shape=True,
                 ws_geo=ws_geo,
+                camera=camera
             )
             
             ori_img = clip_preprocess(real_img)
@@ -302,14 +326,20 @@ def training_loop(
             loss_clip = torch.nn.functional.cosine_embedding_loss(clip_model.encode_image(ori_img), clip_model.encode_image(gen_img), torch.ones(ori_img.shape[0], device=device))
 
             feature_extractor_opt.zero_grad()
+            mapping_network_geo_opt.zero_grad()
+            mapping_network_tex_opt.zero_grad()
             
             loss_clip.backward()
 
             feature_extractor_opt.step()
+            mapping_network_geo_opt.step()
+            mapping_network_tex_opt.step()
             
             if step != 0 and step % image_snapshot_ticks == 0:
                 # ema_geo_diffusion_model.ema_model.eval()
                 feature_extractor.eval()
+                G_ema.mapping_geo.eval()
+                G_ema.mapping.eval()
                 print('==> generate ')
                 save_visualization_sd(
                     G_ema, SD_model, feature_extractor, grid_images, grid_c, grid_t_enc, run_dir, cur_nimg, grid_size, step,
@@ -324,7 +354,10 @@ def training_loop(
             
             step += 1
             cur_nimg += batch_size
-            
+
+            with open(loss_log, 'a') as f:
+                f.write(f'CLIP_loss: {loss_clip.item():.4f}\n')
+
             pbar.update(1)
 
     # Done.
