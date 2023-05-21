@@ -8,14 +8,16 @@
 '''
 Utily functions for the inference
 '''
-import torch
-import numpy as np
 import os
-import PIL.Image
-from training.utils.utils_3d import save_obj, savemeshtes2
-import imageio
+
 import cv2
-from tqdm import tqdm
+import imageio
+import numpy as np
+import PIL.Image
+import torch
+from rich.progress import track
+
+from training.utils.utils_3d import save_obj, savemeshtes2
 
 
 def save_image_grid(img, fname, drange, grid_size):
@@ -147,6 +149,8 @@ def save_visualization_for_interpolation(
 def save_visualization(
         G_ema, grid_z, grid_c, run_dir, cur_nimg, grid_size, cur_tick,
         image_snapshot_ticks=50,
+        cmap_dim=None,
+        c_to_compute_w_avg=None,
         save_gif_name=None,
         save_all=True,
         grid_tex_z=None,
@@ -167,7 +171,7 @@ def save_visualization(
     :return:
     '''
     with torch.no_grad():
-        G_ema.update_w_avg()
+        G_ema.update_w_avg(cmap_dim=cmap_dim, c=c_to_compute_w_avg)
         camera_list = G_ema.synthesis.generate_rotate_camera_list(n_batch=grid_z[0].shape[0])
         camera_img_list = []
         if not save_all:
@@ -178,7 +182,7 @@ def save_visualization(
             images_list = []
             mesh_v_list = []
             mesh_f_list = []
-            for z, geo_z, c in zip(grid_tex_z, grid_z, grid_c):
+            for z, geo_z, c in track(zip(grid_tex_z, grid_z, grid_c), total=len(grid_tex_z), description="Genreating..."):
                 img, mask, sdf, deformation, v_deformed, mesh_v, mesh_f, gen_camera, img_wo_light, tex_hard_mask = G_ema.generate_3d(
                     z=z, geo_z=geo_z, c=c, noise_mode='const',
                     generate_no_light=True, truncation_psi=0.7, camera=camera)
@@ -214,7 +218,7 @@ def save_visualization(
 
 def save_textured_mesh_for_inference(
         G_ema, grid_z, grid_c, run_dir, save_mesh_dir=None,
-        c_to_compute_w_avg=None, grid_tex_z=None, use_style_mixing=False):
+        cmap_dim=None, grid_tex_z=None, use_style_mixing=False):
     '''
     Generate texture mesh for generation
     :param G_ema: GET3D generator
@@ -228,18 +232,19 @@ def save_textured_mesh_for_inference(
     :return:
     '''
     with torch.no_grad():
-        G_ema.update_w_avg(c_to_compute_w_avg)
+        G_ema.update_w_avg(cmap_dim=cmap_dim)
         save_mesh_idx = 0
         mesh_dir = os.path.join(run_dir, save_mesh_dir)
         os.makedirs(mesh_dir, exist_ok=True)
         for idx in range(len(grid_z)):
             geo_z = grid_z[idx]
+            c = grid_c[idx]
             if grid_tex_z is None:
                 tex_z = grid_z[idx]
             else:
                 tex_z = grid_tex_z[idx]
             generated_mesh = G_ema.generate_3d_mesh(
-                geo_z=geo_z, tex_z=tex_z, c=None, truncation_psi=0.7,
+                geo_z=geo_z, tex_z=tex_z, c=c, truncation_psi=0.7,
                 use_style_mixing=use_style_mixing)
             for mesh_v, mesh_f, all_uvs, all_mesh_tex_idx, tex_map in zip(*generated_mesh):
                 savemeshtes2(
@@ -289,7 +294,7 @@ def save_geo_for_inference(G_ema, run_dir):
         os.makedirs(surface_point_dir, exist_ok=True)
         n_gen = 1500 * 5  # We generate 5x of test set here
         i_mesh = 0
-        for i_gen in tqdm(range(n_gen)):
+        for i_gen in track(range(n_gen)):
             geo_z = torch.randn(1, G_ema.z_dim, device=G_ema.device)
             generated_mesh = G_ema.generate_3d_mesh(
                 geo_z=geo_z, tex_z=None, c=None, truncation_psi=truncation_phi,

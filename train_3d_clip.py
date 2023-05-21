@@ -6,18 +6,19 @@
 # distribution of this software and related documentation without an express
 # license agreement from NVIDIA CORPORATION & AFFILIATES is strictly prohibited.
 
-import os
-import click
-import re
 import json
+import os
+import re
 import tempfile
+
+import click
+import rich
 import torch
+
 import dnnlib
-from training import training_loop_3d
 from metrics import metric_main
-from torch_utils import training_stats
-from torch_utils import custom_ops
-from training import inference_3d
+from torch_utils import custom_ops, training_stats
+from training import inference_3d, training_loop_3d
 
 
 # ----------------------------------------------------------------------------
@@ -110,12 +111,12 @@ def init_dataset_kwargs(data, opt=None):
     try:
         if opt.use_shapenet_split:
             dataset_kwargs = dnnlib.EasyDict(
-                class_name='training.dataset.ImageFolderDataset',
+                class_name='training.dataset.MultiClassImageFolderDataset',
                 path=data, use_labels=True, max_size=None, xflip=False,
                 resolution=opt.img_res,
-                data_camera_mode=opt.data_camera_mode,
+                # data_camera_mode=opt.data_camera_mode,
                 add_camera_cond=opt.add_camera_cond,
-                camera_path=opt.camera_path,
+                # camera_path=opt.camera_path,
                 split='test' if opt.inference_vis else 'train',
             )
         else:
@@ -127,7 +128,7 @@ def init_dataset_kwargs(data, opt=None):
                 camera_path=opt.camera_path,
             )
         dataset_obj = dnnlib.util.construct_class_by_name(**dataset_kwargs)  # Subclass of training.dataset.Dataset.
-        dataset_kwargs.camera_path = opt.camera_path
+        # dataset_kwargs.camera_path = opt.camera_path
         dataset_kwargs.resolution = dataset_obj.resolution  # Be explicit about resolution.
         dataset_kwargs.use_labels = dataset_obj.has_labels  # Be explicit about labels.
         dataset_kwargs.max_size = len(dataset_obj)  # Be explicit about dataset size.
@@ -222,7 +223,7 @@ def main(**kwargs):
     c.G_kwargs = dnnlib.EasyDict(
         class_name=None, z_dim=opts.latent_dim, w_dim=opts.latent_dim, mapping_kwargs=dnnlib.EasyDict())
     c.D_kwargs = dnnlib.EasyDict(
-        class_name='training.networks_get3d.Discriminator', block_kwargs=dnnlib.EasyDict(),
+        class_name='training.networks_get3d.DiscriminatorCLIP', block_kwargs=dnnlib.EasyDict(),
         mapping_kwargs=dnnlib.EasyDict(), epilogue_kwargs=dnnlib.EasyDict())
     c.G_opt_kwargs = dnnlib.EasyDict(class_name='torch.optim.Adam', betas=[0, 0.99], eps=1e-8)
     c.D_opt_kwargs = dnnlib.EasyDict(class_name='torch.optim.Adam', betas=[0, 0.99], eps=1e-8)
@@ -272,9 +273,9 @@ def main(**kwargs):
     # c.C_kwargs.data_camera_mode = opts.data_camera_mode
     # c.C_kwargs.add_camera_cond = opts.add_camera_cond
 
-    c.G_kwargs.c_dim = 1
+    c.G_kwargs.c_dim = 512
     c.D_kwargs.c_dim = 0
-    c.D_kwargs.cmap_dim = 2  # number of class
+    # c.D_kwargs.cmap_dim = 2  # number of class
 
     c.G_kwargs.tet_res = opts.tet_res
 
@@ -307,7 +308,7 @@ def main(**kwargs):
     c.image_snapshot_ticks = c.network_snapshot_ticks = opts.snap
     c.random_seed = c.training_set_kwargs.random_seed = opts.seed
     c.data_loader_kwargs.num_workers = opts.workers
-    c.network_snapshot_ticks = 200
+    c.network_snapshot_ticks = 100
     # Sanity checks.
     if c.batch_size % c.num_gpus != 0:
         raise click.ClickException('--batch must be a multiple of --gpus')
@@ -337,6 +338,9 @@ def main(**kwargs):
     desc = f'{opts.cfg:s}-{dataset_name:s}-gpus{c.num_gpus:d}-batch{c.batch_size:d}-gamma{c.loss_kwargs.r1_gamma:g}'
     if opts.desc is not None:
         desc += f'-{opts.desc}'
+    
+    console = rich.get_console()
+    console._force_terminal = True
     # Launch.
     print('==> launch training')
     launch_training(c=c, desc=desc, outdir=opts.outdir, dry_run=opts.dry_run)

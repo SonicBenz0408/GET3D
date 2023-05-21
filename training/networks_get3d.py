@@ -6,18 +6,23 @@
 # distribution of this software and related documentation without an express
 # license agreement from NVIDIA CORPORATION & AFFILIATES is strictly prohibited.
 import math
+
 import numpy as np
+import nvdiffrast.torch as dr
 import torch
 import torch.nn.functional as F
+
 from torch_utils import persistence
-import nvdiffrast.torch as dr
-from training.sample_camera_distribution import sample_camera, create_camera_from_angle
-from uni_rep.rep_3d.dmtet import DMTetGeometry
+from training.discriminator_architecture import (Discriminator,
+                                                 DiscriminatorCLIP)
+from training.geometry_predictor import (Conv3DImplicitSynthesisNetwork,
+                                         MappingNetwork, ToRGBLayer,
+                                         TriPlaneTex, TriPlaneTexGeo)
+from training.sample_camera_distribution import (create_camera_from_angle,
+                                                 sample_camera)
 from uni_rep.camera.perspective_camera import PerspectiveCamera
 from uni_rep.render.neural_render import NeuralRender
-from training.discriminator_architecture import Discriminator
-from training.geometry_predictor import Conv3DImplicitSynthesisNetwork, TriPlaneTex, \
-    MappingNetwork, ToRGBLayer, TriPlaneTexGeo
+from uni_rep.rep_3d.dmtet import DMTetGeometry
 
 
 @persistence.persistent_class
@@ -427,7 +432,8 @@ class DMTETSynthesisNetwork(torch.nn.Module):
         camera_radius = 1.2  # align with what ww did in blender
         camera_r = torch.zeros(n_camera, 1, device=self.device) + camera_radius
         camera_phi = torch.zeros(n_camera, 1, device=self.device) + (90.0 - 15.0) / 90.0 * 0.5 * math.pi
-        camera_theta = torch.range(0, n_camera - 1, device=self.device).unsqueeze(dim=-1) / n_camera * math.pi * 2.0
+        # camera_theta = torch.range(0, n_camera - 1, device=self.device).unsqueeze(dim=-1) / n_camera * math.pi * 2.0
+        camera_theta = torch.arange(0, n_camera, device=self.device).unsqueeze(dim=-1) / n_camera * math.pi * 2.0
         camera_theta = -camera_theta
         world2cam_matrix, camera_origin, _, _, _ = create_camera_from_angle(
             camera_phi, camera_theta, camera_r, device=self.device)
@@ -576,11 +582,11 @@ class GeneratorDMTETMesh(torch.nn.Module):
         self.mapping_geo = MappingNetwork(
             z_dim=z_dim, c_dim=c_dim, w_dim=w_dim, num_ws=self.num_ws_geo,
             device=self.synthesis.device, **mapping_kwargs)
-
-    def update_w_avg(self, c=None):
+            
+    def update_w_avg(self, c=None, cmap_dim=None):
         # Update the the average latent to compute truncation
-        self.mapping.update_w_avg(self.device, c)
-        self.mapping_geo.update_w_avg(self.device, c)
+        self.mapping.update_w_avg(self.device, c=c, cmap_dim=cmap_dim)
+        self.mapping_geo.update_w_avg(self.device, c=c, cmap_dim=cmap_dim)
 
     def generate_3d_mesh(
             self, geo_z, tex_z, c, truncation_psi=1, truncation_cutoff=None, update_emas=False,

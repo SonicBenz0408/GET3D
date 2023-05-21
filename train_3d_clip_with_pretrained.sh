@@ -1,0 +1,1 @@
+python train_3d_clip.py --outdir=./log --data=./dataset --gpus=1 --batch=32 --gamma=80 --dmtet_scale 1.0 --use_shapenet_split 1  --one_3d_generator 1  --fp32 0 --resume_pretrain /home/mason/VLLAB/GET3D/log/00008-stylegan2-motorbike-chair-car-gpus1-batch32-gamma80/network-snapshot-002662.pt

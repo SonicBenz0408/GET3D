@@ -26,18 +26,22 @@ dataset_folder = args.dataset_folder
 blender_root = args.blender_root
 
 synset_list = [
-    '02958343',  # Car
+    #'02958343',  # Car
     '03001627',  # Chair
-    '03790512'  # Motorbike
+    #'03790512'  # Motorbike
 ]
 scale_list = [
-    0.9,
+    #0.9,
     0.7,
-    0.9
+    #0.9
 ]
 for synset, obj_scale in zip(synset_list, scale_list):
     file_list = sorted(os.listdir(os.path.join(dataset_folder, synset)))
     for idx, file in enumerate(file_list):
+        if os.path.exists(os.path.join(save_folder, 'camera', synset, file)):
+            with open('tmp.out', 'a') as f:
+                f.write(f'pass {idx}\n')
+            continue
         render_cmd = '%s -b -P render_shapenet.py -- --output %s %s  --scale %f --views 24 --resolution 1024 >> tmp.out' % (
             blender_root, save_folder, os.path.join(dataset_folder, synset, file, 'model.obj'), obj_scale
         )

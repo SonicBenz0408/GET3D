@@ -16,5 +16,6 @@ pip install urllib3
 pip install scipy
 pip install click
 pip install tqdm
+pip install rich
 pip install opencv-python==4.5.4.58
 

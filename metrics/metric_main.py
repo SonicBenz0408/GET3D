@@ -8,19 +8,18 @@
 
 """Main API for computing and reporting quality metrics."""
 
+import json
 import os
 import time
-import json
+
 import torch
+from rich.progress import track
+
 import dnnlib
 
-from . import metric_utils
-from . import frechet_inception_distance
-from . import kernel_inception_distance
-from . import precision_recall
-from . import perceptual_path_length
-from . import inception_score
-from . import equivariance
+from . import (equivariance, frechet_inception_distance, inception_score,
+               kernel_inception_distance, metric_utils, perceptual_path_length,
+               precision_recall)
 
 # ----------------------------------------------------------------------------
 
@@ -45,15 +44,20 @@ def list_valid_metrics():
 
 def calc_metric(metric, **kwargs):  # See metric_utils.MetricOptions for the full list of arguments.
     assert is_valid_metric(metric)
+    print("Start running calc_metric")
     opts = metric_utils.MetricOptions(**kwargs)
 
     # Calculate.
+    print("Calculating...")
     start_time = time.time()
+    print(_metric_dict)
+    print(metric)
     results = _metric_dict[metric](opts)
     total_time = time.time() - start_time
 
+    print("Broadcasting results")
     # Broadcast results.
-    for key, value in list(results.items()):
+    for key, value in track(list(results.items())):
         if opts.num_gpus > 1:
             value = torch.as_tensor(value, dtype=torch.float64, device=opts.device)
             torch.distributed.broadcast(tensor=value, src=0)

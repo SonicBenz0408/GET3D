@@ -10,14 +10,17 @@
 import copy
 import os
 
+import clip
 import numpy as np
 import torch
+
 import dnnlib
-from torch_utils.ops import conv2d_gradfix
-from torch_utils.ops import grid_sample_gradfix
 from metrics import metric_main
-from training.inference_utils import save_visualization, save_visualization_for_interpolation, \
-    save_textured_mesh_for_inference, save_geo_for_inference
+from torch_utils.ops import conv2d_gradfix, grid_sample_gradfix
+from training.inference_utils import (save_geo_for_inference,
+                                      save_textured_mesh_for_inference,
+                                      save_visualization,
+                                      save_visualization_for_interpolation)
 
 
 def clean_training_set_kwargs_for_metrics(training_set_kwargs):
@@ -44,9 +47,7 @@ def inference(
         inference_generate_geo=False,
         **dummy_kawargs
 ):
-    from torch_utils.ops import upfirdn2d
-    from torch_utils.ops import bias_act
-    from torch_utils.ops import filtered_lrelu
+    from torch_utils.ops import bias_act, filtered_lrelu, upfirdn2d
     upfirdn2d._init()
     bias_act._init()
     filtered_lrelu._init()
@@ -63,9 +64,10 @@ def inference(
 
 
     common_kwargs = dict(
-        c_dim=0, img_resolution=training_set_kwargs['resolution'] if 'resolution' in training_set_kwargs else 1024, img_channels=3)
+        img_resolution=training_set_kwargs['resolution'] if 'resolution' in training_set_kwargs else 1024, img_channels=3)
     G_kwargs['device'] = device
 
+    training_set = dnnlib.util.construct_class_by_name(**training_set_kwargs)  # subclass of training.dataset.Dataset
     G = dnnlib.util.construct_class_by_name(**G_kwargs, **common_kwargs).train().requires_grad_(False).to(
         device)  # subclass of torch.nn.Module
     # D = dnnlib.util.construct_class_by_name(**D_kwargs, **common_kwargs).train().requires_grad_(False).to(
@@ -81,13 +83,24 @@ def inference(
     n_shape = grid_size[0] * grid_size[1]
     grid_z = torch.randn([n_shape, G.z_dim], device=device).split(1)  # random code for geometry
     grid_tex_z = torch.randn([n_shape, G.z_dim], device=device).split(1)  # random code for texture
-    grid_c = torch.ones(n_shape, device=device).split(1)
+    c_to_compute_w_avg = [training_set.get_label(np.random.randint(len(training_set))) for _ in range(10000)]
+    c_to_compute_w_avg = torch.from_numpy(np.stack(c_to_compute_w_avg)).pin_memory().to(device)
+    
+    clip_model, clip_preprocess = clip.load("ViT-B/32", device=device)
+    text_condition = clip.tokenize(["blue chair"]).to(device)
+    clip_condition = clip_model.encode_text(text_condition).squeeze().cpu().detach().numpy()
+
+    grid_c = [clip_condition for _ in range(n_shape)]
+    grid_c = torch.from_numpy(np.stack(grid_c)).pin_memory().to(device).split(1)
+    # grid_c = [training_set.get_label(np.random.randint(len(training_set))) for _ in range(n_shape)]
+    # grid_c = torch.from_numpy(np.stack(grid_c)).pin_memory().to(device).split(1)
 
     print('==> generate ')
     save_visualization(
         G_ema, grid_z, grid_c, run_dir, 0, grid_size, 0,
         save_all=False,
-        grid_tex_z=grid_tex_z
+        grid_tex_z=grid_tex_z,
+        c_to_compute_w_avg=c_to_compute_w_avg,
     )
 
     if inference_to_generate_textured_mesh:

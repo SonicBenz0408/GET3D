@@ -6,17 +6,18 @@
 # distribution of this software and related documentation without an express
 # license agreement from NVIDIA CORPORATION & AFFILIATES is strictly prohibited.
 
-import math
-import numpy as np
-import os
 import argparse
+import math
 import multiprocessing as mp
+import os
 from multiprocessing import Pool
-import trimesh
-import tqdm
-import torch
-import nvdiffrast.torch as dr
+
 import kaolin as kal
+import numpy as np
+import nvdiffrast.torch as dr
+import torch
+import trimesh
+from rich.progress import track
 
 parser = argparse.ArgumentParser(description='sample surface points from mesh')
 parser.add_argument(
@@ -311,8 +312,8 @@ if __name__ == '__main__':
     cmds = [(os.path.join(shapenet_root, id), os.path.join(save_root, id.replace('.obj', '.npz')), debug) for id in
             model_list]
     if options.n_proc == 0:
-        for filepath in tqdm.tqdm(cmds):
+        for filepath in track(cmds):
             sample_surface_pts(filepath)
     else:
         with Pool(options.n_proc) as p:
-            list(tqdm.tqdm(p.imap(sample_surface_pts, cmds), total=len(cmds)))
+            list(track(p.imap(sample_surface_pts, cmds), total=len(cmds)))

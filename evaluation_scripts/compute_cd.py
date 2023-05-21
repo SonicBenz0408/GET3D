@@ -7,14 +7,15 @@
 # license agreement from NVIDIA CORPORATION & AFFILIATES is strictly prohibited.
 
 import argparse
-import numpy as np
-import torch
+import glob
 import os
 import random
-import glob
-from tqdm import tqdm
+
 import kaolin as kal
+import numpy as np
 import point_cloud_utils as pcu
+import torch
+from rich.progress import track
 
 
 def seed_everything(seed):
@@ -61,10 +62,10 @@ def chamfer_distance(ref_pcs, sample_pcs, batch_size):
     all_rec_pcs = []
     n_sample = 2048
     normalized_scale = 1.0
-    for name in tqdm(ref_pcs):
+    for name in track(ref_pcs):
         all_rec_pcs.append(sample_point_with_mesh_name(name, n_sample, normalized_scale=normalized_scale))
     all_sample_pcs = []
-    for name in tqdm(sample_pcs):
+    for name in track(sample_pcs):
         # This is generated
         all_sample_pcs.append(sample_point_with_mesh_name(name, n_sample, normalized_scale=normalized_scale))
     all_rec_pcs = [p for p in all_rec_pcs if p is not None]
@@ -72,7 +73,7 @@ def chamfer_distance(ref_pcs, sample_pcs, batch_size):
     all_rec_pcs = torch.cat(all_rec_pcs, dim=0)
     all_sample_pcs = torch.cat(all_sample_pcs, dim=0)
     all_cd = []
-    for i_ref_p in tqdm(range(len(ref_pcs))):
+    for i_ref_p in track(range(len(ref_pcs))):
         ref_p = all_rec_pcs[i_ref_p]
         cd_lst = []
         for sample_b_start in range(0, len(sample_pcs), batch_size):

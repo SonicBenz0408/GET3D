@@ -8,19 +8,20 @@
 
 """Main training loop."""
 
-import os
 import copy
 import json
-import numpy as np
-import torch
-import dnnlib
-from torch_utils import misc
-from torch_utils import training_stats
-from torch_utils.ops import conv2d_gradfix
-from torch_utils.ops import grid_sample_gradfix
-from metrics import metric_main
-import nvdiffrast.torch as dr
+import os
 import time
+
+import dnnlib
+import numpy as np
+import nvdiffrast.torch as dr
+import torch
+from metrics import metric_main
+from rich.progress import Progress
+from torch_utils import misc, training_stats
+from torch_utils.ops import conv2d_gradfix, grid_sample_gradfix
+
 from training.inference_utils import save_image_grid, save_visualization
 
 
@@ -82,13 +83,15 @@ def training_loop(
         data_loader_kwargs={},  # Options for torch.utils.data.DataLoader.
         G_kwargs={},  # Options for generator network.
         D_kwargs={},  # Options for discriminator network.
+        C_kwargs={},  # Options for classifier network.
         G_opt_kwargs={},  # Options for generator optimizer.
         D_opt_kwargs={},  # Options for discriminator optimizer.
+        C_opt_kwargs={},  # Options for classifier optimizer.
         loss_kwargs={},  # Options for loss function.
         metrics=[],  # Metrics to evaluate during training.
         random_seed=0,  # Global random seed.
         num_gpus=1,  # Number of GPUs participating in the training.
-        rank=0,  # Rank of the current process in [0, num_gpus[.
+        rank=0,  # Rank of the current process in [0, num_gpus].
         batch_size=4,  # Total batch size for one training iteration. Can be larger than batch_gpu * num_gpus.
         batch_gpu=4,  # Number of samples processed at a time by one GPU.
         ema_kimg=10,  # Half-life of the exponential moving average (EMA) of generator weights.
@@ -107,9 +110,7 @@ def training_loop(
         detect_anomaly=False,
         resume_pretrain=None,
 ):
-    from torch_utils.ops import upfirdn2d
-    from torch_utils.ops import bias_act
-    from torch_utils.ops import filtered_lrelu
+    from torch_utils.ops import bias_act, filtered_lrelu, upfirdn2d
     upfirdn2d._init()
     bias_act._init()
     filtered_lrelu._init()
@@ -149,10 +150,13 @@ def training_loop(
         print('Constructing networks...')
 
     # Constructing networks
+    # common_kwargs = dict(
+    #     c_dim=training_set.label_dim, img_resolution=training_set.resolution, img_channels=training_set.num_channels)
     common_kwargs = dict(
-        c_dim=training_set.label_dim, img_resolution=training_set.resolution, img_channels=training_set.num_channels)
+        img_resolution=training_set.resolution, img_channels=training_set.num_channels)
     G_kwargs['device'] = device
     D_kwargs['device'] = device
+    #C_kwargs['device'] = device
 
     if num_gpus > 1:
         torch.distributed.barrier()
@@ -160,15 +164,27 @@ def training_loop(
         device)  # subclass of torch.nn.Module
     D = dnnlib.util.construct_class_by_name(**D_kwargs, **common_kwargs).train().requires_grad_(False).to(
         device)  # subclass of torch.nn.Module
+    # C = dnnlib.util.construct_class_by_name(**C_kwargs, **common_kwargs).train().requires_grad_(False).to(
+    #     device)  # subclass of torch.nn.Module
     G_ema = copy.deepcopy(G).eval()  # deepcopy can make sure they are correct.
+    print("Resume path: ", resume_pretrain)
     if resume_pretrain is not None and (rank == 0):
         # We're not reusing the loading function from stylegan3 codebase,
         # since we have some variables that are not picklable.
         print('==> resume from pretrained path %s' % (resume_pretrain))
         model_state_dict = torch.load(resume_pretrain, map_location=device)
-        G.load_state_dict(model_state_dict['G'], strict=True)
-        G_ema.load_state_dict(model_state_dict['G_ema'], strict=True)
-        D.load_state_dict(model_state_dict['D'], strict=True)
+
+        for weight in model_state_dict['G']:
+            if weight in ['mapping.fc0.weight', 'mapping_geo.fc0.weight']:
+                model_state_dict['G'][weight] = torch.concat([model_state_dict['G'][weight], model_state_dict['G'][weight]], dim=-1)
+        
+        for weight in model_state_dict['G_ema']:
+            if weight in ['mapping.fc0.weight', 'mapping_geo.fc0.weight']:
+                model_state_dict['G_ema'][weight] = torch.concat([model_state_dict['G_ema'][weight], model_state_dict['G_ema'][weight]], dim=-1)
+
+        G.load_state_dict(model_state_dict['G'], strict=False)
+        G_ema.load_state_dict(model_state_dict['G_ema'], strict=False)
+        D.load_state_dict(model_state_dict['D'], strict=False)
 
     if rank == 0:
         print('Setting up augmentation...')
@@ -226,12 +242,16 @@ def training_loop(
             save_image_grid(images, os.path.join(run_dir, 'reals.png'), drange=[0, 255], grid_size=grid_size)
         torch.manual_seed(1234)
         grid_z = torch.randn([images.shape[0], G.z_dim], device=device).split(1)  # This one is the latent code for shape generation
-        grid_c = torch.ones(images.shape[0], device=device).split(1)  # This one is not used, just for the compatiable with the code structure.
+        # grid_c = torch.randint(0, D_kwargs['cmap_dim'], [images.shape[0], G.c_dim], device=device).split(1)  # This one is the condition to controll generation of different classes
+        c_to_compute_w_avg = [training_set.get_label(np.random.randint(len(training_set))) for _ in range(10000)]
+        c_to_compute_w_avg = torch.from_numpy(np.stack(c_to_compute_w_avg)).pin_memory().to(device)
+        grid_c = [training_set.get_label(np.random.randint(len(training_set))) for _ in range(images.shape[0])]
+        grid_c = torch.from_numpy(np.stack(grid_c)).pin_memory().to(device).split(1)
 
     if rank == 0:
         print('Initializing logs...')
     stats_collector = training_stats.Collector(regex='.*')
-    stats_metrics = dict()
+    # stats_metrics = dict()
     stats_jsonl = None
     stats_tfevents = None
     if rank == 0:
@@ -257,198 +277,211 @@ def training_loop(
 
     optim_step = 0
 
-    # Training Iterations
-    while True:
-        # Fetch training data.
-        with torch.autograd.profiler.record_function('data_fetch'):
-            phase_real_img, phase_real_c, real_mask = next(training_set_iterator)
-            phase_real_img = (phase_real_img.to(device).to(torch.float32) / 127.5 - 1)
-            real_mask = real_mask.to(device).to(torch.float32).unsqueeze(dim=1)
-            real_mask = (real_mask > 0).float()
-            phase_real_img = torch.cat([phase_real_img, real_mask], dim=1)
-            phase_real_img = phase_real_img.split(batch_gpu)
-            phase_real_c = phase_real_c.to(device).split(batch_gpu)
-            all_gen_z = torch.randn([len(phases) * (batch_size // num_gpus), G.z_dim], device=device)
-            all_gen_z = [phase_gen_z.split(batch_gpu) for phase_gen_z in all_gen_z.split((batch_size // num_gpus))]
-            all_gen_c = [training_set.get_label(np.random.randint(len(training_set))) for _ in
-                         range(len(phases) * (batch_size // num_gpus))]
-            all_gen_c = torch.from_numpy(np.stack(all_gen_c)).pin_memory().to(device)
-            all_gen_c = [phase_gen_c.split(batch_gpu) for phase_gen_c in all_gen_c.split(batch_size // num_gpus)]
-        optim_step += 1
-        # Execute training phases.
-        for phase, phase_gen_z, phase_gen_c in zip(phases, all_gen_z, all_gen_c):
-            if batch_idx % phase.interval != 0:
+    with Progress() as progress:
+        # Training Iterations
+        task = progress.add_task("[red]Training...", total=kimg_per_tick * 1000)
+        while True:
+            if progress.finished:
+                progress.reset(task)
+            # Fetch training data.
+            with torch.autograd.profiler.record_function('data_fetch'):
+                phase_real_img, phase_real_c, real_mask = next(training_set_iterator)
+                phase_real_img = (phase_real_img.to(device).to(torch.float32) / 127.5 - 1)
+                real_mask = real_mask.to(device).to(torch.float32).unsqueeze(dim=1)
+                real_mask = (real_mask > 0).float()
+                phase_real_img = torch.cat([phase_real_img, real_mask], dim=1)
+                phase_real_img = phase_real_img.split(batch_gpu)
+                phase_real_c = phase_real_c.to(device).split(batch_gpu)
+                all_gen_z = torch.randn([len(phases) * (batch_size // num_gpus), G.z_dim], device=device)
+                all_gen_z = [phase_gen_z.split(batch_gpu) for phase_gen_z in all_gen_z.split((batch_size // num_gpus))]
+                all_gen_c = [training_set.get_label(np.random.randint(len(training_set))) for _ in
+                            range(len(phases) * (batch_size // num_gpus))]
+                all_gen_c = torch.from_numpy(np.stack(all_gen_c)).pin_memory().to(device)
+                all_gen_c = [phase_gen_c.split(batch_gpu) for phase_gen_c in all_gen_c.split(batch_size // num_gpus)]
+                
+            optim_step += 1
+            # Execute training phases.
+            for phase, phase_gen_z, phase_gen_c in zip(phases, all_gen_z, all_gen_c):
+                if batch_idx % phase.interval != 0:
+                    continue
+                if phase.start_event is not None:
+                    phase.start_event.record(torch.cuda.current_stream(device))
+                # Accumulate gradients.
+                phase.opt.zero_grad(set_to_none=False)
+                phase.module.requires_grad_(True)
+            
+                for real_img, real_c, gen_z, gen_c in zip(phase_real_img, phase_real_c, phase_gen_z, phase_gen_c):
+                    loss.accumulate_gradients(
+                        phase=phase.name, real_img=real_img, real_c=real_c, gen_z=gen_z, gen_c=gen_c,
+                        gain=phase.interval, cur_nimg=cur_nimg)
+                phase.module.requires_grad_(False)
+
+                # Update weights.
+                with torch.autograd.profiler.record_function(phase.name + '_opt'):
+                    params = [param for param in phase.module.parameters() if param.grad is not None]
+                    if len(params) > 0:
+                        flat = torch.cat([param.grad.flatten() for param in params])
+                        if num_gpus > 1:
+                            torch.distributed.all_reduce(flat)
+                            flat /= num_gpus
+                        if torch.isnan(flat).any():
+                            print('==> find nan values')
+                            print('==> nan grad')  # We should keep track of this for nan!!!!!!
+                            for name, p in phase.module.named_parameters():
+                                if p.grad is not None:
+                                    if torch.isnan(p.grad).any():
+                                        print(name)
+                        misc.nan_to_num(flat, nan=0, posinf=1e5, neginf=-1e5, out=flat)
+                        grads = flat.split([param.numel() for param in params])
+                        for param, grad in zip(params, grads):
+                            param.grad = grad.reshape(param.shape)
+                    phase.opt.step()
+
+                # Phase done.
+                if phase.end_event is not None:
+                    phase.end_event.record(torch.cuda.current_stream(device))
+
+            # Update G_ema.
+            with torch.autograd.profiler.record_function('Gema'):
+                ema_nimg = ema_kimg * 1000
+                if ema_rampup is not None:
+                    ema_nimg = min(ema_nimg, cur_nimg * ema_rampup)
+                ema_beta = 0.5 ** (batch_size / max(ema_nimg, 1e-8))
+                for p_ema, p in zip(G_ema.parameters(), G.parameters()):
+                    p_ema.copy_(p.lerp(p_ema, ema_beta))
+                for b_ema, b in zip(G_ema.buffers(), G.buffers()):
+                    b_ema.copy_(b)
+
+            # Update state.
+            cur_nimg += batch_size
+            batch_idx += 1
+            progress.update(task, advance=batch_size)
+            # Perform maintenance tasks once per tick.
+            done = (cur_nimg >= total_kimg * 1000)
+            if detect_anomaly:
+                print('==> finished one round')
+
+            if (not done) and (cur_tick != 0) and (cur_nimg < tick_start_nimg + kimg_per_tick * 1000):
                 continue
-            if phase.start_event is not None:
-                phase.start_event.record(torch.cuda.current_stream(device))
-            # Accumulate gradients.
-            phase.opt.zero_grad(set_to_none=False)
-            phase.module.requires_grad_(True)
-            for real_img, real_c, gen_z, gen_c in zip(phase_real_img, phase_real_c, phase_gen_z, phase_gen_c):
-                loss.accumulate_gradients(
-                    phase=phase.name, real_img=real_img, real_c=real_c, gen_z=gen_z, gen_c=gen_c,
-                    gain=phase.interval, cur_nimg=cur_nimg)
-            phase.module.requires_grad_(False)
 
-            # Update weights.
-            with torch.autograd.profiler.record_function(phase.name + '_opt'):
-                params = [param for param in phase.module.parameters() if param.grad is not None]
-                if len(params) > 0:
-                    flat = torch.cat([param.grad.flatten() for param in params])
-                    if num_gpus > 1:
-                        torch.distributed.all_reduce(flat)
-                        flat /= num_gpus
-                    if torch.isnan(flat).any():
-                        print('==> find nan values')
-                        print('==> nan grad')  # We should keep track of this for nan!!!!!!
-                        for name, p in phase.module.named_parameters():
-                            if p.grad is not None:
-                                if torch.isnan(p.grad).any():
-                                    print(name)
-                    misc.nan_to_num(flat, nan=0, posinf=1e5, neginf=-1e5, out=flat)
-                    grads = flat.split([param.numel() for param in params])
-                    for param, grad in zip(params, grads):
-                        param.grad = grad.reshape(param.shape)
-                phase.opt.step()
+            # Print status line, accumulating the same information in training_stats.
+            tick_end_time = time.time()
+            fields = []
+            fields += [f"tick {training_stats.report0('Progress/tick', cur_tick):<5d}"]
+            fields += [f"kimg {training_stats.report0('Progress/kimg', cur_nimg / 1e3):<8.1f}"]
+            fields += [
+                f"time {dnnlib.util.format_time(training_stats.report0('Timing/total_sec', tick_end_time - start_time)):<12s}"]
+            fields += [f"sec/tick {training_stats.report0('Timing/sec_per_tick', tick_end_time - tick_start_time):<7.1f}"]
+            fields += [
+                f"sec/kimg {training_stats.report0('Timing/sec_per_kimg', (tick_end_time - tick_start_time) / (cur_nimg - tick_start_nimg) * 1e3):<7.2f}"]
+            fields += [f"maintenance {training_stats.report0('Timing/maintenance_sec', maintenance_time):<6.1f}"]
 
-            # Phase done.
-            if phase.end_event is not None:
-                phase.end_event.record(torch.cuda.current_stream(device))
-        # Update G_ema.
-        with torch.autograd.profiler.record_function('Gema'):
-            ema_nimg = ema_kimg * 1000
-            if ema_rampup is not None:
-                ema_nimg = min(ema_nimg, cur_nimg * ema_rampup)
-            ema_beta = 0.5 ** (batch_size / max(ema_nimg, 1e-8))
-            for p_ema, p in zip(G_ema.parameters(), G.parameters()):
-                p_ema.copy_(p.lerp(p_ema, ema_beta))
-            for b_ema, b in zip(G_ema.buffers(), G.buffers()):
-                b_ema.copy_(b)
+            if rank == 0:
+                print(' '.join(fields))
 
-        # Update state.
-        cur_nimg += batch_size
-        batch_idx += 1
+            if detect_anomaly:
+                continue
 
-        # Perform maintenance tasks once per tick.
-        done = (cur_nimg >= total_kimg * 1000)
-        if detect_anomaly:
-            print('==> finished one round')
+            if (not done) and (abort_fn is not None) and abort_fn():
+                done = True
+                if rank == 0:
+                    print()
+                    print('Aborting...')
+            
+            # Save image snapshot.
+            if (rank == 0) and (image_snapshot_ticks is not None) and (done or cur_tick % image_snapshot_ticks == 0) and (
+                    not detect_anomaly):
+                with torch.no_grad():
+                    print('==> start visualization')
+                    save_visualization(
+                        G_ema, grid_z, grid_c, run_dir, cur_nimg, grid_size, cur_tick,
+                        image_snapshot_ticks,
+                        save_all=(cur_tick % (image_snapshot_ticks * 4) == 0) and training_set.resolution < 512,
+                        c_to_compute_w_avg=c_to_compute_w_avg,
+                        # cmap_dim=D_kwargs['cmap_dim']
+                    )
+                    print('==> saved visualization')
 
-        if (not done) and (cur_tick != 0) and (cur_nimg < tick_start_nimg + kimg_per_tick * 1000):
-            continue
+                # Save network snapshot.
+            snapshot_pkl = None
+            snapshot_data = None
+            if (network_snapshot_ticks is not None) and (done or cur_tick % network_snapshot_ticks == 0) and not detect_anomaly:  # and (cur_tick != 0 or resume_pretrain is not None):  ###########
+                snapshot_data = dict(
+                    G=G, D=D, G_ema=G_ema)
+                for key, value in snapshot_data.items():
+                    if isinstance(value, torch.nn.Module) and not isinstance(value, dr.ops.RasterizeGLContext):
+                        if num_gpus > 1:
+                            misc.check_ddp_consistency(value, ignore_regex=r'.*\.[^.]+_(avg|ema|ctx)')
+                            for param in misc.params_and_buffers(value):
+                                torch.distributed.broadcast(param, src=0)
+                        snapshot_data[key] = value
+                snapshot_pkl = os.path.join(run_dir, f'network-snapshot-{cur_nimg // 1000:06d}.pkl')
+                if rank == 0:
+                    all_model_dict = {'G': snapshot_data['G'].state_dict(), 'G_ema': snapshot_data['G_ema'].state_dict(),
+                                    'D': snapshot_data['D'].state_dict()}
+                    torch.save(all_model_dict, snapshot_pkl.replace('.pkl', '.pt'))
 
-        # Print status line, accumulating the same information in training_stats.
-        tick_end_time = time.time()
-        fields = []
-        fields += [f"tick {training_stats.report0('Progress/tick', cur_tick):<5d}"]
-        fields += [f"kimg {training_stats.report0('Progress/kimg', cur_nimg / 1e3):<8.1f}"]
-        fields += [
-            f"time {dnnlib.util.format_time(training_stats.report0('Timing/total_sec', tick_end_time - start_time)):<12s}"]
-        fields += [f"sec/tick {training_stats.report0('Timing/sec_per_tick', tick_end_time - tick_start_time):<7.1f}"]
-        fields += [
-            f"sec/kimg {training_stats.report0('Timing/sec_per_kimg', (tick_end_time - tick_start_time) / (cur_nimg - tick_start_nimg) * 1e3):<7.2f}"]
-        fields += [f"maintenance {training_stats.report0('Timing/maintenance_sec', maintenance_time):<6.1f}"]
+            # Evaluate metrics.
+            # if (snapshot_data is not None) and (len(metrics) > 0):
+            #     if rank == 0:
+            #         print('Evaluating metrics...')
+            #     with torch.no_grad():
+            #         for i, metric in enumerate(metrics):
+            #             print(i)
+            #             if training_set_kwargs['split'] != 'all':
+            #                 if rank == 0:
+            #                     print('====> use validation set')
+            #                 training_set_kwargs['split'] = 'val'
+            #             training_set_kwargs = clean_training_set_kwargs_for_metrics(training_set_kwargs)
+            #             print("====> calculating metric")
+            #             with torch.no_grad():
+            #                 result_dict = metric_main.calc_metric(
+            #                     metric=metric, G=snapshot_data['G_ema'],
+            #                     dataset_kwargs=training_set_kwargs, num_gpus=num_gpus, rank=rank, device=device)
+            #             print("====> reporting metric")
+            #             if rank == 0:
+            #                 metric_main.report_metric(result_dict, run_dir=run_dir, snapshot_pkl=snapshot_pkl)
+            #             print("====> stats_metrics update")
+            #             stats_metrics.update(result_dict.results)
+            #     if rank == 0:
+            #         print('==> finished evaluate metrics')
 
+            # Collect statistics.
+            for phase in phases:
+                value = []
+                with torch.no_grad():
+                    if (phase.start_event is not None) and (phase.end_event is not None):
+                        phase.end_event.synchronize()
+                        value = phase.start_event.elapsed_time(phase.end_event)
+                    training_stats.report0('Timing/' + phase.name, value)
+            stats_collector.update()
+            stats_dict = stats_collector.as_dict()
+
+            # Update logs.
+            timestamp = time.time()
+            if stats_jsonl is not None:
+                fields = dict(stats_dict, timestamp=timestamp)
+                stats_jsonl.write(json.dumps(fields) + '\n')
+                stats_jsonl.flush()
+            if stats_tfevents is not None:
+                global_step = int(cur_nimg / 1e3)
+                walltime = timestamp - start_time
+                for name, value in stats_dict.items():
+                    stats_tfevents.add_scalar(name, value.mean, global_step=global_step, walltime=walltime)
+                # for name, value in stats_metrics.items():
+                #     stats_tfevents.add_scalar(f'Metrics/{name}', value, global_step=global_step, walltime=walltime)
+                stats_tfevents.flush()
+            if progress_fn is not None:
+                progress_fn(cur_nimg // 1000, total_kimg)
+
+            ##### Update state.
+            cur_tick += 1
+            tick_start_nimg = cur_nimg
+            tick_start_time = time.time()
+            maintenance_time = tick_start_time - tick_end_time
+            if done:
+                break
+        # Done.
         if rank == 0:
-            print(' '.join(fields))
-
-        if detect_anomaly:
-            continue
-
-        if (not done) and (abort_fn is not None) and abort_fn():
-            done = True
-            if rank == 0:
-                print()
-                print('Aborting...')
-
-        # Save image snapshot.
-        if (rank == 0) and (image_snapshot_ticks is not None) and (done or cur_tick % image_snapshot_ticks == 0) and (
-                not detect_anomaly):
-            with torch.no_grad():
-                print('==> start visualization')
-                save_visualization(
-                    G_ema, grid_z, grid_c, run_dir, cur_nimg, grid_size, cur_tick,
-                    image_snapshot_ticks,
-                    save_all=(cur_tick % (image_snapshot_ticks * 4) == 0) and training_set.resolution < 512,
-                )
-                print('==> saved visualization')
-
-            # Save network snapshot.
-        snapshot_pkl = None
-        snapshot_data = None
-        if (network_snapshot_ticks is not None) and (done or cur_tick % network_snapshot_ticks == 0) and not detect_anomaly:  # and (cur_tick != 0 or resume_pretrain is not None):  ###########
-            snapshot_data = dict(
-                G=G, D=D, G_ema=G_ema)
-            for key, value in snapshot_data.items():
-                if isinstance(value, torch.nn.Module) and not isinstance(value, dr.ops.RasterizeGLContext):
-                    if num_gpus > 1:
-                        misc.check_ddp_consistency(value, ignore_regex=r'.*\.[^.]+_(avg|ema|ctx)')
-                        for param in misc.params_and_buffers(value):
-                            torch.distributed.broadcast(param, src=0)
-                    snapshot_data[key] = value
-            snapshot_pkl = os.path.join(run_dir, f'network-snapshot-{cur_nimg // 1000:06d}.pkl')
-            if rank == 0:
-                all_model_dict = {'G': snapshot_data['G'].state_dict(), 'G_ema': snapshot_data['G_ema'].state_dict(),
-                                  'D': snapshot_data['D'].state_dict()}
-                torch.save(all_model_dict, snapshot_pkl.replace('.pkl', '.pt'))
-
-        # Evaluate metrics.
-        if (snapshot_data is not None) and (len(metrics) > 0):
-            if rank == 0:
-                print('Evaluating metrics...')
-            with torch.no_grad():
-                for metric in metrics:
-                    if training_set_kwargs['split'] != 'all':
-                        if rank == 0:
-                            print('====> use validation set')
-                        training_set_kwargs['split'] = 'val'
-                    training_set_kwargs = clean_training_set_kwargs_for_metrics(training_set_kwargs)
-                    with torch.no_grad():
-                        result_dict = metric_main.calc_metric(
-                            metric=metric, G=snapshot_data['G_ema'],
-                            dataset_kwargs=training_set_kwargs, num_gpus=num_gpus, rank=rank, device=device)
-                    if rank == 0:
-                        metric_main.report_metric(result_dict, run_dir=run_dir, snapshot_pkl=snapshot_pkl)
-                    stats_metrics.update(result_dict.results)
-            if rank == 0:
-                print('==> finished evaluate metrics')
-
-        # Collect statistics.
-        for phase in phases:
-            value = []
-            with torch.no_grad():
-                if (phase.start_event is not None) and (phase.end_event is not None):
-                    phase.end_event.synchronize()
-                    value = phase.start_event.elapsed_time(phase.end_event)
-                training_stats.report0('Timing/' + phase.name, value)
-        stats_collector.update()
-        stats_dict = stats_collector.as_dict()
-
-        # Update logs.
-        timestamp = time.time()
-        if stats_jsonl is not None:
-            fields = dict(stats_dict, timestamp=timestamp)
-            stats_jsonl.write(json.dumps(fields) + '\n')
-            stats_jsonl.flush()
-        if stats_tfevents is not None:
-            global_step = int(cur_nimg / 1e3)
-            walltime = timestamp - start_time
-            for name, value in stats_dict.items():
-                stats_tfevents.add_scalar(name, value.mean, global_step=global_step, walltime=walltime)
-            for name, value in stats_metrics.items():
-                stats_tfevents.add_scalar(f'Metrics/{name}', value, global_step=global_step, walltime=walltime)
-            stats_tfevents.flush()
-        if progress_fn is not None:
-            progress_fn(cur_nimg // 1000, total_kimg)
-
-        ##### Update state.
-        cur_tick += 1
-        tick_start_nimg = cur_nimg
-        tick_start_time = time.time()
-        maintenance_time = tick_start_time - tick_end_time
-        if done:
-            break
-    # Done.
-    if rank == 0:
-        print()
-        print('Exiting...')
+            print()
+            print('Exiting...')
