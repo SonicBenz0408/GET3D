@@ -8,15 +8,17 @@
 '''
 Utily functions for the inference
 '''
-import torch
-import numpy as np
 import os
-import PIL.Image
-from training.utils.utils_3d import save_obj, savemeshtes2
-import imageio
+
 import cv2
-from tqdm import tqdm
+import imageio
+import numpy as np
+import PIL.Image
+import torch
 import torch.nn.functional as F
+from tqdm import tqdm
+
+from training.utils.utils_3d import save_obj, savemeshtes2
 
 
 def save_image_grid(img, fname, drange, grid_size):

@@ -10,26 +10,28 @@
 
 import copy
 import json
+import math
 import os
 import time
-import math
 
-import dnnlib
+import matplotlib.pyplot as plt
 import numpy as np
 import nvdiffrast.torch as dr
 import torch
 import torch.nn.functional as F
 from clip import clip
-from ldm.models.diffusion.ddim import DDIMSampler
-from ldm.models.diffusion.ddpm import LatentDiffusion
-from metrics import metric_main
-from rich.progress import Progress
-from torch_utils import misc, training_stats
-from torch_utils.ops import conv2d_gradfix, grid_sample_gradfix
+from rich.progress import (Progress, SpinnerColumn, TextColumn,
+                           TimeElapsedColumn)
 from torchvision.transforms import Normalize
 from tqdm import tqdm
 from transformers import logging
 
+import dnnlib
+from ldm.models.diffusion.ddim import DDIMSampler
+from ldm.models.diffusion.ddpm import LatentDiffusion
+from metrics import metric_main
+from torch_utils import misc, training_stats
+from torch_utils.ops import conv2d_gradfix, grid_sample_gradfix
 from training.feature_pyramid_network import SDFeatureExtractor
 from training.inference_utils import save_image_grid, save_visualization_sd
 from training.sample_camera_distribution import create_camera_from_angle
@@ -289,12 +291,18 @@ def training_loop(
     mapping_network_tex_opt = torch.optim.Adam(params=G_ema.mapping.parameters(), lr=1e-6, betas=[0, 0.99])
     
     criterion_clip = torch.nn.CosineEmbeddingLoss()
+    criterion_feature = torch.nn.MSELoss()
     loss_log = os.path.join(run_dir, f'loss.txt')
     with open(loss_log, 'w') as f:
         pass
 
-    with Progress() as progress:
-        task = progress.add_task("Training...", total=train_num_steps)
+    with Progress(
+        SpinnerColumn(),
+        *Progress.get_default_columns(),
+        TimeElapsedColumn(),
+        TextColumn("[green][bold]{task.fields[step]}[/bold]/{task.total}[/green] loss: {task.fields[loss_feature]:.5f} + {task.fields[loss_clip]:.5f} = [bold]{task.fields[loss]:.5f}[/bold]"),
+        ) as progress:
+        task = progress.add_task("Training...", total=train_num_steps, step=step, loss_feature=0, loss_clip=0, loss=0)
         
         c = SD_model.get_learned_conditioning(batch_size * [""])
         t_enc = torch.tensor([0], device=device).expand(batch_size)
@@ -333,6 +341,8 @@ def training_loop(
                 ws_geo=ws_geo,
                 camera=camera
             )
+            
+            #  Calculate clip loss and feature loss
             gen_img, gen_mask = img[:, :training_set.num_channels, :, :], img[:, training_set.num_channels, :, :]
             
             ori_clip_img = clip_preprocess(real_img, real_mask)
@@ -341,13 +351,20 @@ def training_loop(
             ori_clip_feature = clip_model.encode_image(ori_clip_img)
             gen_clip_feature =  clip_model.encode_image(gen_clip_img)
 
+            gen_init_latents = SD_model.get_first_stage_encoding(SD_model.encode_first_stage(F.interpolate(gen_img, size=(512, 512))))
+            _, gen_unet_features = SD_model.model.diffusion_model(gen_init_latents, t_enc, c)
+
+            gen_sd_features = feature_extractor(gen_unet_features)
+
             loss_clip = criterion_clip(ori_clip_feature, gen_clip_feature, torch.ones(ori_clip_img.shape[0]).to(device))
+            loss_feature = criterion_feature(sd_features, gen_sd_features)
+            loss = loss_clip + loss_feature
 
             feature_extractor_opt.zero_grad()
             mapping_network_geo_opt.zero_grad()
             mapping_network_tex_opt.zero_grad()
             
-            loss_clip.backward()
+            loss.backward()
 
             feature_extractor_opt.step()
             mapping_network_geo_opt.step()
@@ -365,9 +382,9 @@ def training_loop(
                     save_all=(step % (image_snapshot_ticks * 4) == 0) and training_set.resolution < 512,
                 )
             if step % network_snapshot_ticks == 0:
-                snapshot_data = dict(feature_extractor=feature_extractor)
-                snapshot_pkl = os.path.join(run_dir, f'feature-extractor-snapshot-{step}.pkl')
-                all_model_dict = {'feature_extractor': snapshot_data['feature_extractor'].state_dict()}
+                snapshot_data = dict(feature_extractor=feature_extractor, G_ema=G_ema)
+                snapshot_pkl = os.path.join(run_dir, f'snapshot-{step}.pkl')
+                all_model_dict = {'feature_extractor': snapshot_data['feature_extractor'].state_dict(), 'G_ema': snapshot_data['G_ema'].state_dict()}
                 torch.save(all_model_dict, snapshot_pkl.replace('.pkl', '.pt'))
                 snapshot_data = dict(G_ema=G_ema)
                 for key, value in snapshot_data.items():
@@ -382,9 +399,9 @@ def training_loop(
             cur_nimg += batch_size
 
             with open(loss_log, 'a') as f:
-                f.write(f'CLIP_loss: {loss_clip.item():.4f}\n')
+                f.write(f'CLIP_loss: {loss_clip.item():.4f} feature_loss: {loss_feature.item()} loss: {loss.item()}\n')
 
-            progress.update(task, advance=1)
+            progress.update(task, advance=1, step=step, loss_feature=loss_feature.item(), loss_clip=loss_clip.item(), loss=loss.item())
 
     # Done.
     if rank == 0:
