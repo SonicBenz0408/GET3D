@@ -12,6 +12,7 @@ import copy
 import json
 import os
 import time
+import math
 
 import dnnlib
 import numpy as np
@@ -117,6 +118,7 @@ def clip_preprocess(imgs, masks, res=224):
     for img, mask in zip(imgs, masks):
         background = torch.randn_like(img).to(imgs.device)
         img = img * (mask > 0).to(img.dtype) + background * (1 - (mask > 0).to(img.dtype))
+        img = normalize(img)
         all_img.append(img)
     imgs = torch.stack(all_img)
     return imgs
@@ -260,10 +262,10 @@ def training_loop(
         print('Exporting sample images...')
         grid_size, images, labels, masks = setup_snapshot_image_grid(training_set=training_set, inference=inference_vis)
         masks = np.stack(masks)
+        grid_images = (torch.from_numpy(images).to(device).to(torch.float32) / 127.5 - 1).split(1)
         images = np.concatenate((images, masks[:, np.newaxis, :, :].repeat(3, axis=1) * 255.0), axis=-1)
         if not inference_vis:
             save_image_grid(images, os.path.join(run_dir, 'reals.png'), drange=[0, 255], grid_size=grid_size)
-        grid_images = (torch.from_numpy(images).to(device).to(torch.float32) / 127.5 - 1).split(1)
         grid_c = SD_model.get_learned_conditioning(images.shape[0] * [""]).split(1)
         grid_t_enc = torch.tensor([0], device=device).expand(images.shape[0]).split(1)
         torch.manual_seed(1234)
@@ -282,9 +284,9 @@ def training_loop(
     step = 0
     cur_nimg = resume_kimg * 1000
     
-    feature_extractor_opt = torch.optim.Adam(params=feature_extractor.parameters(), lr=1e-4, betas=[0, 0.99])
-    mapping_network_geo_opt = torch.optim.Adam(params=G_ema.mapping_geo.parameters(), lr=2e-5, betas=[0, 0.99])
-    mapping_network_tex_opt = torch.optim.Adam(params=G_ema.mapping.parameters(), lr=2e-5, betas=[0, 0.99])
+    feature_extractor_opt = torch.optim.Adam(params=feature_extractor.parameters(), lr=1e-5, betas=[0, 0.99])
+    mapping_network_geo_opt = torch.optim.Adam(params=G_ema.mapping_geo.parameters(), lr=1e-6, betas=[0, 0.99])
+    mapping_network_tex_opt = torch.optim.Adam(params=G_ema.mapping.parameters(), lr=1e-6, betas=[0, 0.99])
     
     criterion_clip = torch.nn.CosineEmbeddingLoss()
     loss_log = os.path.join(run_dir, f'loss.txt')
@@ -312,7 +314,7 @@ def training_loop(
                 real_img = (real_img.to(device).to(torch.float32) / 127.5 - 1)
                 rot = real_camera[:, 0:1].repeat(1, G_ema.synthesis.n_views).reshape((batch_size * G_ema.synthesis.n_views, 1)).to(device)
                 ele = real_camera[:, 1:2].repeat(1, G_ema.synthesis.n_views).reshape((batch_size * G_ema.synthesis.n_views, 1)).to(device)
-                world2cam_matrix, forward_vector, camera_origin, rotation_angle, elevation_angle = create_camera_from_angle(ele, rot, camera_r, device=device)
+                world2cam_matrix, forward_vector, camera_origin, elevation_angle, rotation_angle = create_camera_from_angle(ele, -rot - 0.5 * math.pi, camera_r, device=device)
                 camera = (world2cam_matrix.reshape(batch_size, G_ema.synthesis.n_views, 4, 4), camera_origin.reshape(batch_size, G_ema.synthesis.n_views, 3), \
                     camera_r, rotation_angle, elevation_angle)
                 real_mask = real_mask.to(device).to(torch.float32)
@@ -351,7 +353,7 @@ def training_loop(
             mapping_network_geo_opt.step()
             mapping_network_tex_opt.step()
             
-            if step != 0 and step % image_snapshot_ticks == 0:
+            if step % image_snapshot_ticks == 0:
                 # ema_geo_diffusion_model.ema_model.eval()
                 feature_extractor.eval()
                 G_ema.mapping_geo.eval()
@@ -367,6 +369,14 @@ def training_loop(
                 snapshot_pkl = os.path.join(run_dir, f'feature-extractor-snapshot-{step}.pkl')
                 all_model_dict = {'feature_extractor': snapshot_data['feature_extractor'].state_dict()}
                 torch.save(all_model_dict, snapshot_pkl.replace('.pkl', '.pt'))
+                snapshot_data = dict(G_ema=G_ema)
+                for key, value in snapshot_data.items():
+                    if isinstance(value, torch.nn.Module) and not isinstance(value, dr.ops.RasterizeGLContext):
+                        snapshot_data[key] = value
+                snapshot_pkl = os.path.join(run_dir, f'network-snapshot-{step}.pkl')
+                if rank == 0:
+                    all_model_dict = {'G_ema': snapshot_data['G_ema'].state_dict()}
+                    torch.save(all_model_dict, snapshot_pkl.replace('.pkl', '.pt'))
             
             step += 1
             cur_nimg += batch_size

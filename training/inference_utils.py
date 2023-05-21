@@ -238,12 +238,12 @@ def save_visualization_sd(
     '''
     with torch.no_grad():
         G_ema.update_w_avg()
-        camera_list = G_ema.synthesis.generate_rotate_camera_list(n_batch=grid_images[0].shape[0])
+        camera_list = G_ema.synthesis.generate_rotate_camera_list(n_batch=len(grid_images))
         camera_img_list = []
         if not save_all:
             camera_list = [camera_list[4]]  # we only save one camera for this
         if not grid_dummy_c:
-            grid_dummy_c = torch.ones(grid_images.shape[0], device="cuda").split(1)
+            grid_dummy_c = torch.ones(len(grid_images), device="cuda").split(1)
         for i_camera, camera in enumerate(camera_list):
             images_list = []
             mesh_v_list = []
