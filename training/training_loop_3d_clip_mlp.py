@@ -33,7 +33,7 @@ from metrics import metric_main
 from torch_utils import misc, training_stats
 from torch_utils.ops import conv2d_gradfix, grid_sample_gradfix
 from training.feature_pyramid_network import SDFeatureExtractor, CLIPImplicitEncoder
-from training.inference_utils import save_image_grid, save_visualization_sd
+from training.inference_utils import save_image_grid, save_visualization_clip
 from training.sample_camera_distribution import create_camera_from_angle
 
 logging.set_verbosity_error()
@@ -211,41 +211,31 @@ def training_loop(
 
     if num_gpus > 1:
         torch.distributed.barrier()
-    G = dnnlib.util.construct_class_by_name(**G_kwargs, **common_kwargs).train().requires_grad_(False).to(
+    G_ema = dnnlib.util.construct_class_by_name(**G_kwargs, **common_kwargs).train().requires_grad_(False).to(
         device)  # subclass of torch.nn.Module
-    D = dnnlib.util.construct_class_by_name(**D_kwargs, **common_kwargs).train().requires_grad_(False).to(
-        device)  # subclass of torch.nn.Module
-    G_ema = copy.deepcopy(G).eval()  # deepcopy can make sure they are correct.
+    #D = dnnlib.util.construct_class_by_name(**D_kwargs, **common_kwargs).train().requires_grad_(False).to(
+    #    device)  # subclass of torch.nn.Module
+    #G_ema = copy.deepcopy(G).eval()  # deepcopy can make sure they are correct.
     if resume_pretrain is not None and (rank == 0):
         # We're not reusing the loading function from stylegan3 codebase,
         # since we have some variables that are not picklable.
         print('==> resume from pretrained path %s' % (resume_pretrain))
         model_state_dict = torch.load(resume_pretrain, map_location=device)
-        G.load_state_dict(model_state_dict['G'], strict=True)
+        #G.load_state_dict(model_state_dict['G'], strict=True)
         G_ema.load_state_dict(model_state_dict['G_ema'], strict=True)
-        D.load_state_dict(model_state_dict['D'], strict=True)
+        #D.load_state_dict(model_state_dict['D'], strict=True)
+        print(G_ema.c_dim)
 
     G_ema.requires_grad_(False)
     G_ema.eval()
 
-    clip_model, _ = clip.load('ViT-L/14', device=device)
+    clip_model, _ = clip.load('ViT-B/16', device=device)
     clip_model.requires_grad_(False)
     clip_model.eval()
 
-    clip_mlp = CLIPImplicitEncoder(in_features=768, out_features=768).to(device)
-    feature_extractor = SDFeatureExtractor(channel_list=[1280, 1280, 640, 320], out_dim=512, init_dim=8, factor=8).to(device)
+    del clip_model.transformer
 
-    print("Load Stable Diffusion model...")
-    SD_model = load_model_from_config(config, f"{sd_ckpt}")
-    SD_model = SD_model.to(device)
-    SD_model.requires_grad_(False)
-    SD_model.model.diffusion_model.requires_grad_(True)
-
-    print("Sampler...")
-    SD_sampler = DDIMSampler(SD_model)
-
-    ddim_steps = 50
-    SD_sampler.make_schedule(ddim_num_steps=ddim_steps, ddim_eta=0.0, verbose=False)
+    clip_mlp = CLIPImplicitEncoder(in_features=512, out_features=512, z_dim=G_ema.z_dim).to(device)
 
     # TODO: adjust parameters
     G_ema.mapping_geo.requires_grad_(True)
@@ -258,7 +248,7 @@ def training_loop(
     # Distribute across GPUs.
     if rank == 0:
         print(f'Distributing across {num_gpus} GPUs...')
-    for module in [G, D, G_ema]:
+    for module in [G_ema]:
         if module is not None and num_gpus > 1:
             for param in misc.params_and_buffers(module):
                 torch.distributed.broadcast(param, src=0)  # Broadcast from GPU 0
@@ -273,14 +263,14 @@ def training_loop(
         print('Exporting sample images...')
         grid_size, images, labels, masks = setup_snapshot_image_grid(training_set=training_set, inference=inference_vis)
         masks = np.stack(masks)
-        grid_images = (torch.from_numpy(images).to(device).to(torch.float32) / 127.5 - 1) # .split(1)
+        grid_images = (torch.from_numpy(images).to(device).to(torch.float32) / 127.5 - 1) # .split(1)  # [0, 1]
         images = np.concatenate((images, masks[:, np.newaxis, :, :].repeat(3, axis=1) * 255.0), axis=-1)
         if not inference_vis:
             save_image_grid(images, os.path.join(run_dir, 'reals.png'), drange=[0, 255], grid_size=grid_size)
         grid_clip_images = clip_preprocess(grid_images, background_aug=False)
-        grid_c = clip_model.encode_image(grid_clip_images).float()
-        # grid_c = SD_model.get_learned_conditioning(images.shape[0] * [""]).split(1)
-        grid_t_enc = torch.tensor([ddim_steps], device=device).expand(images.shape[0]).split(1)
+        grid_z = torch.randn([images.shape[0], G_ema.z_dim], device=device).split(1)  # This one is the latent code for shape generation
+        grid_c = clip_model.encode_image(grid_clip_images).float().split(1)
+        grid_dummy_c = torch.ones(images.shape[0], device=device).split(1)  # This one is not used, just for the compatiable with the code structure.
         torch.manual_seed(1234)
 
     if rank == 0:
@@ -297,10 +287,9 @@ def training_loop(
     step = 0
     cur_nimg = resume_kimg * 1000
 
-    clip_mlp_opt = torch.optim.Adam(params=clip_mlp.parameters(), lr=1e-5, betas=[0, 0.99])
-    feature_extractor_opt = torch.optim.Adam(params=feature_extractor.parameters(), lr=1e-5, betas=[0, 0.99])
-    mapping_network_geo_opt = torch.optim.Adam(params=G_ema.mapping_geo.parameters(), lr=1e-7, betas=[0, 0.99])
-    mapping_network_tex_opt = torch.optim.Adam(params=G_ema.mapping.parameters(), lr=1e-7, betas=[0, 0.99])
+    clip_mlp_opt = torch.optim.Adam(params=clip_mlp.parameters(), lr=1e-4, betas=[0, 0.99])
+    mapping_network_geo_opt = torch.optim.Adam(params=G_ema.mapping_geo.parameters(), lr=1e-4, betas=[0, 0.99])
+    mapping_network_tex_opt = torch.optim.Adam(params=G_ema.mapping.parameters(), lr=1e-4, betas=[0, 0.99])
     
     criterion_clip = torch.nn.CosineEmbeddingLoss()
     criterion_feature = torch.nn.MSELoss()
@@ -312,21 +301,17 @@ def training_loop(
         SpinnerColumn(),
         *Progress.get_default_columns(),
         TimeElapsedColumn(),
-        TextColumn("[green][bold]{task.fields[step]}[/bold]/{task.total}[/green] loss: {task.fields[loss_feature]:.5f} + {task.fields[loss_clip]:.5f} = [bold]{task.fields[loss]:.5f}[/bold]"),
+        TextColumn("[green][bold]{task.fields[step]}[/bold]/{task.total}[/green] loss: [bold]{task.fields[loss_clip]:.5f}[/bold]"),
         ) as progress:
-        task = progress.add_task("Training...", total=train_num_steps, step=step, loss_feature=0, loss_clip=0, loss=0)
+        task = progress.add_task("Training...", total=train_num_steps, step=step, loss_clip=0)
         
-        #c = SD_model.get_learned_conditioning(batch_size * [""])
-        t_enc = torch.tensor([ddim_steps], device=device).expand(batch_size)
         dummy_c = torch.ones(batch_size, device=device)
         camera_radius = 1.2  # align with what ww did in blender
         camera_r = torch.zeros(batch_size * G_ema.synthesis.n_views, 1, device=device) + camera_radius
-        latent_shape = (batch_size, 4, 64, 64)
 
         while step < train_num_steps:
             # ---------------------------------------------------------------------------------------
             clip_mlp.train()
-            feature_extractor.train()
             G_ema.mapping_geo.train()
             G_ema.mapping.train()
 
@@ -341,20 +326,16 @@ def training_loop(
                     camera_r, rotation_angle, elevation_angle)
                 real_mask = real_mask.to(device).to(torch.float32)
 
+                geo_z = torch.randn((batch_size, G_ema.z_dim), device=device)
+                tex_z = torch.randn_like(geo_z, device=device)
+
             ori_clip_img = clip_preprocess(real_img, real_mask)
             ori_clip_feature = clip_model.encode_image(ori_clip_img)
 
-            c = clip_mlp(ori_clip_feature.float())
-            
-            x_noisy = torch.randn(latent_shape, device=device)
+            ws_geo, ws_tex = clip_mlp(ori_clip_feature.float(), geo_z, tex_z)
 
-            # init_latents = SD_model.get_first_stage_encoding(SD_model.encode_first_stage(F.interpolate(real_img, size=(512, 512))))
-            _, unet_features = SD_model.model.diffusion_model(x_noisy, t_enc, c)
-
-            # ws_geo, ws_tex = feature_extractor(unet_features)
-            sd_features = feature_extractor(unet_features)
             # ws_geo, ws_tex = ws_geo.unsqueeze(1).repeat([1, G_ema.num_ws_geo, 1]), ws_tex.unsqueeze(1).repeat([1, G_ema.num_ws, 1])
-            ws_geo, ws_tex = G_ema.mapping_geo(z=sd_features, c=dummy_c), G_ema.mapping(z=sd_features, c=dummy_c)
+            ws_geo, ws_tex = G_ema.mapping_geo(z=ws_geo, c=dummy_c), G_ema.mapping(z=ws_tex, c=dummy_c)
 
             img, sdf, syn_camera, deformation, v_deformed, mesh_v, mesh_f, mask_pyramid, _, _ = G_ema.synthesis(
                 ws=ws_tex, update_emas=False,
@@ -382,50 +363,48 @@ def training_loop(
             loss = loss_clip# + loss_feature
 
             clip_mlp.zero_grad()
-            feature_extractor_opt.zero_grad()
             mapping_network_geo_opt.zero_grad()
             mapping_network_tex_opt.zero_grad()
             
             loss.backward()
 
             clip_mlp_opt.step()
-            feature_extractor_opt.step()
             mapping_network_geo_opt.step()
             mapping_network_tex_opt.step()
             
             if step % image_snapshot_ticks == 0:
                 # ema_geo_diffusion_model.ema_model.eval()
                 clip_mlp.eval()
-                feature_extractor.eval()
                 G_ema.mapping_geo.eval()
                 G_ema.mapping.eval()
                 print('==> generate ')
-                save_visualization_sd(
-                    G_ema, SD_model, clip_mlp, feature_extractor, grid_images, grid_c, grid_t_enc, run_dir, cur_nimg, grid_size, step,
+                save_visualization_clip(
+                    G_ema, clip_mlp, grid_z, grid_c, grid_dummy_c, run_dir, cur_nimg, grid_size, step,
                     image_snapshot_ticks,
                     save_all=(step % (image_snapshot_ticks * 4) == 0) and training_set.resolution < 512,
                 )
             if step % network_snapshot_ticks == 0:
-                snapshot_data = dict(clip_mlp=clip_mlp, feature_extractor=feature_extractor, G_ema=G_ema)
+                snapshot_data = dict(clip_mlp=clip_mlp, G_ema=G_ema)
                 snapshot_pkl = os.path.join(run_dir, f'snapshot-{step}.pkl')
-                all_model_dict = {'clip_mlp': snapshot_data['clip_mlp'].state_dict(), 'feature_extractor': snapshot_data['feature_extractor'].state_dict(), 'G_ema': snapshot_data['G_ema'].state_dict()}
+                all_model_dict = {'clip_mlp': snapshot_data['clip_mlp'].state_dict(), 'G_ema': snapshot_data['G_ema'].state_dict()}
                 torch.save(all_model_dict, snapshot_pkl.replace('.pkl', '.pt'))
-                snapshot_data = dict(G_ema=G_ema)
-                for key, value in snapshot_data.items():
-                    if isinstance(value, torch.nn.Module) and not isinstance(value, dr.ops.RasterizeGLContext):
-                        snapshot_data[key] = value
-                snapshot_pkl = os.path.join(run_dir, f'network-snapshot-{step}.pkl')
-                if rank == 0:
-                    all_model_dict = {'G_ema': snapshot_data['G_ema'].state_dict()}
-                    torch.save(all_model_dict, snapshot_pkl.replace('.pkl', '.pt'))
+                
+                # snapshot_data = dict(G_ema=G_ema)
+                # for key, value in snapshot_data.items():
+                #     if isinstance(value, torch.nn.Module) and not isinstance(value, dr.ops.RasterizeGLContext):
+                #         snapshot_data[key] = value
+                # snapshot_pkl = os.path.join(run_dir, f'network-snapshot-{step}.pkl')
+                # if rank == 0:
+                #     all_model_dict = {'G_ema': snapshot_data['G_ema'].state_dict()}
+                #     torch.save(all_model_dict, snapshot_pkl.replace('.pkl', '.pt'))
             
             step += 1
             cur_nimg += batch_size
 
             with open(loss_log, 'a') as f:
-                f.write(f'CLIP_loss: {loss_clip.item():.4f} feature_loss: {0.} loss: {loss.item()}\n')
+                f.write(f'CLIP_loss: {loss_clip.item():.4f}\n')
 
-            progress.update(task, advance=1, step=step, loss_feature=0., loss_clip=loss_clip.item(), loss=loss.item())
+            progress.update(task, advance=1, step=step, loss_clip=loss_clip.item())
 
     # Done.
     if rank == 0:

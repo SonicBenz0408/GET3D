@@ -2,22 +2,66 @@ import torch.nn as nn
 import torch
 import torch.nn.functional as F
 import math
-
+from timm.models.layers import trunc_normal_
 # [N, 1280, 8, 8]
 # [N, 1280, 16, 16]
 # [N, 640, 32, 32]
 # [N, 320, 64, 64]
 
 
-class ReductionAndUpsample(nn.Module):
-    def __init__(self, in_channel, out_channel, in_dim, out_dim):
+def weights_init(m):
+    if isinstance(m, nn.Linear):
+        torch.nn.init.xavier_uniform_(m.weight)
+        if m.bias is not None:
+            torch.nn.init.zeros_(m.bias)
+
+
+class PositionalLinear(nn.Module):
+    def __init__(self, in_features, out_features, seq_len=77, bias=True):
         super().__init__()
-        assert out_dim // in_dim == 2
+        self.linear = nn.Linear(in_features, out_features, bias=bias)
+        self.positional_embedding = nn.Parameter(torch.zeros(1, seq_len, out_features))
+        trunc_normal_(self.positional_embedding, std=0.02)
+
+    def forward(self, x):
+        x = self.linear(x)
+        x = x.unsqueeze(1) + self.positional_embedding
+
+        return x
+
+
+class CLIPImplicitEncoder(nn.Module):
+    def __init__(self, in_features, out_features, z_dim=512):
+        super().__init__()
+        self.mlp = nn.Sequential(
+            nn.Linear(in_features, out_features),
+            nn.LeakyReLU(0.2, inplace=True),
+            nn.Linear(out_features, out_features)
+        )
+        self.mapping_geo = nn.Sequential(
+            nn.Linear(out_features+z_dim, z_dim),
+            nn.LeakyReLU(0.2, inplace=True)
+        )
+        self.mapping_tex = nn.Sequential(
+            nn.Linear(out_features+z_dim, z_dim),
+            nn.LeakyReLU(0.2, inplace=True)
+        )
+    def forward(self, x, z_geo, z_tex):
+        x = self.mlp(x)
+        geo = self.mapping_geo(torch.cat([z_geo, x], dim=-1))
+        tex = self.mapping_tex(torch.cat([z_tex, x], dim=-1))
+
+        return geo, tex
+
+
+class ReductionAndUpsample(nn.Module):
+    def __init__(self, in_channel, out_channel, scale_factor):
+        super().__init__()
         self.layers = nn.Sequential(
             nn.Conv2d(in_channel, out_channel, kernel_size=1, stride=1, bias=False),
             nn.BatchNorm2d(out_channel),
             nn.ReLU(inplace=True),
-            nn.Upsample(scale_factor=2)
+            nn.Upsample(scale_factor=scale_factor)
         )
 
     def forward(self, features):
@@ -53,32 +97,21 @@ class FPN(nn.Module):
         super().__init__()
         
         self.fpn_blocks = []
-        self.forward_blocks = []
         for i in range(len(channel_list)-1):
-            self.fpn_blocks.append(ReductionAndUpsample(channel_list[i], channel_list[i+1], 2 ** int(math.log2(init_dim)+i), 2 ** int(math.log2(init_dim)+i+1)))
-            self.forward_blocks.append(nn.Conv2d(channel_list[i+1], channel_list[i+1], kernel_size=3, stride=1, padding=1))
+            self.fpn_blocks.append(ReductionAndUpsample(channel_list[i], channel_list[-1], 2 ** (i+1)))
         
         self.fpn_blocks = nn.ModuleList(self.fpn_blocks)
-        self.forward_blocks = nn.ModuleList(self.forward_blocks)
 
     def forward(self, feature_list):
-        in_features = feature_list.pop(0)
-        for i in range(len(self.fpn_blocks)):
-            in_features = self.forward_blocks[i](self.fpn_blocks[i](in_features) + feature_list.pop(0))
+        out_features = []
+        for i, feature in enumerate(feature_list):
+            out_features.append(self.fpn_blocks[i](feature))
         
-        out_features = in_features
-
         return out_features
 
 
-def weights_init(m):
-    if isinstance(m, nn.Linear):
-        torch.nn.init.xavier_uniform_(m.weight)
-        if m.bias is not None:
-            torch.nn.init.zeros_(m.bias)
-
 class SDFeatureExtractor(nn.Module):
-    def __init__(self, channel_list, out_dim=512, init_dim=8, factor=8, num_layers=8):
+    def __init__(self, channel_list, out_dim=512, init_dim=8, factor=8):
         super().__init__()
         
         self.fpn = FPN(channel_list=channel_list, init_dim=init_dim)
