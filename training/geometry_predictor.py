@@ -11,17 +11,13 @@ import math
 
 import numpy as np
 import torch
-from torch_utils import misc
-from torch_utils import persistence
-from torch_utils.ops import conv2d_resample
-from torch_utils.ops import upfirdn2d
-from torch_utils.ops import bias_act
-from torch_utils.ops import fma
-from torch import nn
 import torch.nn.functional as F
-from training.utils.ops import grid_sample_3d
-from torch_utils.ops import grid_sample_gradfix
+from torch import nn
 
+from torch_utils import misc, persistence
+from torch_utils.ops import (bias_act, conv2d_resample, fma,
+                             grid_sample_gradfix, upfirdn2d)
+from training.utils.ops import grid_sample_3d
 
 # ----------------------------------------------------------------------------
 
@@ -751,6 +747,7 @@ class SynthesisBlockTexGeo(torch.nn.Module):
         layer_kwargs = {}
         if in_channels == 0:
             self.const = torch.nn.Parameter(torch.randn([out_channels, resolution, resolution], device=device))
+            self.const_from_sd = None
 
         if in_channels != 0:
             self.conv0 = SynthesisLayer(
@@ -794,8 +791,9 @@ class SynthesisBlockTexGeo(torch.nn.Module):
 
         # Input.
         if self.in_channels == 0:
-            x = self.const.to(dtype=dtype, memory_format=memory_format)
-            x = x.unsqueeze(0).repeat([ws_geo.shape[0], 1, 1, 1])
+            x = self.const_from_sd.to(dtype=dtype, memory_format=memory_format)
+            x += self.const.to(dtype=dtype, memory_format=memory_format)
+            # x = x.unsqueeze(0).repeat([ws_geo.shape[0], 1, 1, 1])
         else:
             misc.assert_shape(x, [None, self.in_channels, self.resolution // 2, self.resolution // 2])
             x = x.to(dtype=dtype, memory_format=memory_format)
@@ -919,7 +917,7 @@ class SynthesisBlock(torch.nn.Module):
         else:
             # misc.assert_shape(x, [None, self.in_channels, self.resolution // 2, self.resolution // 2])
             x = x.to(dtype=dtype, memory_format=memory_format)
-
+        print(x.shape)
         # Main layers.
         if self.in_channels == 0:
             x = self.conv1(x, next(w_iter), fused_modconv=fused_modconv, **layer_kwargs)

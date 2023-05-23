@@ -8,20 +8,20 @@
 
 """Main training loop."""
 
-import os
 import copy
 import json
-import numpy as np
-import torch
-import dnnlib
-from torch_utils import misc
-from torch_utils import training_stats
-from torch_utils.ops import conv2d_gradfix
-from torch_utils.ops import grid_sample_gradfix
-from metrics import metric_main
-import nvdiffrast.torch as dr
+import os
 import time
+
+import numpy as np
+import nvdiffrast.torch as dr
+import torch
+
+import dnnlib
+from torch_utils import misc, training_stats
+from torch_utils.ops import conv2d_gradfix, grid_sample_gradfix
 from training.inference_utils import save_image_grid, save_visualization
+from training.ldm_feature_extractor import FeatureExtractor
 
 
 # ----------------------------------------------------------------------------
@@ -67,13 +67,6 @@ def setup_snapshot_image_grid(training_set, random_seed=0, inference=False):
     return (gw, gh), np.stack(images), np.stack(labels), masks
 
 
-def clean_training_set_kwargs_for_metrics(training_set_kwargs):
-    # We use this function to remove or change custom kwargs for dataset
-    # we used these kwargs to comput md5 for the cache file of FID
-    if 'add_camera_cond' in training_set_kwargs:
-        training_set_kwargs['add_camera_cond'] = True
-    return training_set_kwargs
-
 
 # ----------------------------------------------------------------------------
 def training_loop(
@@ -107,9 +100,7 @@ def training_loop(
         detect_anomaly=False,
         resume_pretrain=None,
 ):
-    from torch_utils.ops import upfirdn2d
-    from torch_utils.ops import bias_act
-    from torch_utils.ops import filtered_lrelu
+    from torch_utils.ops import bias_act, filtered_lrelu, upfirdn2d
     upfirdn2d._init()
     bias_act._init()
     filtered_lrelu._init()
@@ -125,7 +116,7 @@ def training_loop(
     torch.backends.cudnn.allow_tf32 = True  # Improves numerical accuracy.
     conv2d_gradfix.enabled = True  # Improves training speed.
     grid_sample_gradfix.enabled = True  # Avoids errors with the augmentation pipe.
-
+    batch_size = 1
     if rank == 0:
         print('Loading training set...')
 
@@ -170,6 +161,8 @@ def training_loop(
         G_ema.load_state_dict(model_state_dict['G_ema'], strict=True)
         D.load_state_dict(model_state_dict['D'], strict=True)
 
+    F = FeatureExtractor().train().requires_grad_(False).to(device)
+
     if rank == 0:
         print('Setting up augmentation...')
 
@@ -186,7 +179,7 @@ def training_loop(
 
     # Constructing loss functins and optimizer
     loss = dnnlib.util.construct_class_by_name(
-        device=device, G=G, D=D, **loss_kwargs)  # subclass of training.loss.Loss
+        device=device, G=G, D=D, F=F, **loss_kwargs)  # subclass of training.loss.Loss
     phases = []
 
     for name, module, opt_kwargs, reg_interval in [('G', G, G_opt_kwargs, G_reg_interval),
@@ -216,6 +209,7 @@ def training_loop(
     grid_size = None
     grid_z = None
     grid_c = None
+    grid_images = None
 
     if rank == 0:
         print('Exporting sample images...')
@@ -227,11 +221,12 @@ def training_loop(
         torch.manual_seed(1234)
         grid_z = torch.randn([images.shape[0], G.z_dim], device=device).split(1)  # This one is the latent code for shape generation
         grid_c = torch.ones(images.shape[0], device=device).split(1)  # This one is not used, just for the compatiable with the code structure.
+        grid_images = (torch.from_numpy(images).to(device).to(torch.float32) / 127.5 - 1).split(1)
+
 
     if rank == 0:
         print('Initializing logs...')
     stats_collector = training_stats.Collector(regex='.*')
-    stats_metrics = dict()
     stats_jsonl = None
     stats_tfevents = None
     if rank == 0:
@@ -284,11 +279,16 @@ def training_loop(
             # Accumulate gradients.
             phase.opt.zero_grad(set_to_none=False)
             phase.module.requires_grad_(True)
+            F.requires_grad_(True)
+            F.ldm_feature_extractor.training = True
             for real_img, real_c, gen_z, gen_c in zip(phase_real_img, phase_real_c, phase_gen_z, phase_gen_c):
                 loss.accumulate_gradients(
                     phase=phase.name, real_img=real_img, real_c=real_c, gen_z=gen_z, gen_c=gen_c,
                     gain=phase.interval, cur_nimg=cur_nimg)
             phase.module.requires_grad_(False)
+            F.requires_grad_(False)
+            F.ldm_feature_extractor.training = False
+            
 
             # Update weights.
             with torch.autograd.profiler.record_function(phase.name + '_opt'):
@@ -367,7 +367,7 @@ def training_loop(
             with torch.no_grad():
                 print('==> start visualization')
                 save_visualization(
-                    G_ema, grid_z, grid_c, run_dir, cur_nimg, grid_size, cur_tick,
+                    G_ema, F, grid_z, grid_c, grid_images, run_dir, cur_nimg, grid_size, cur_tick,
                     image_snapshot_ticks,
                     save_all=(cur_tick % (image_snapshot_ticks * 4) == 0) and training_set.resolution < 512,
                 )
@@ -392,26 +392,6 @@ def training_loop(
                                   'D': snapshot_data['D'].state_dict()}
                 torch.save(all_model_dict, snapshot_pkl.replace('.pkl', '.pt'))
 
-        # Evaluate metrics.
-        if (snapshot_data is not None) and (len(metrics) > 0):
-            if rank == 0:
-                print('Evaluating metrics...')
-            with torch.no_grad():
-                for metric in metrics:
-                    if training_set_kwargs['split'] != 'all':
-                        if rank == 0:
-                            print('====> use validation set')
-                        training_set_kwargs['split'] = 'val'
-                    training_set_kwargs = clean_training_set_kwargs_for_metrics(training_set_kwargs)
-                    with torch.no_grad():
-                        result_dict = metric_main.calc_metric(
-                            metric=metric, G=snapshot_data['G_ema'],
-                            dataset_kwargs=training_set_kwargs, num_gpus=num_gpus, rank=rank, device=device)
-                    if rank == 0:
-                        metric_main.report_metric(result_dict, run_dir=run_dir, snapshot_pkl=snapshot_pkl)
-                    stats_metrics.update(result_dict.results)
-            if rank == 0:
-                print('==> finished evaluate metrics')
 
         # Collect statistics.
         for phase in phases:
@@ -435,8 +415,6 @@ def training_loop(
             walltime = timestamp - start_time
             for name, value in stats_dict.items():
                 stats_tfevents.add_scalar(name, value.mean, global_step=global_step, walltime=walltime)
-            for name, value in stats_metrics.items():
-                stats_tfevents.add_scalar(f'Metrics/{name}', value, global_step=global_step, walltime=walltime)
             stats_tfevents.flush()
         if progress_fn is not None:
             progress_fn(cur_nimg // 1000, total_kimg)

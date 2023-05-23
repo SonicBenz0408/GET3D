@@ -6,18 +6,22 @@
 # distribution of this software and related documentation without an express
 # license agreement from NVIDIA CORPORATION & AFFILIATES is strictly prohibited.
 import math
+
 import numpy as np
+import nvdiffrast.torch as dr
 import torch
 import torch.nn.functional as F
+
 from torch_utils import persistence
-import nvdiffrast.torch as dr
-from training.sample_camera_distribution import sample_camera, create_camera_from_angle
-from uni_rep.rep_3d.dmtet import DMTetGeometry
+from training.discriminator_architecture import Discriminator
+from training.geometry_predictor import (Conv3DImplicitSynthesisNetwork,
+                                         MappingNetwork, ToRGBLayer,
+                                         TriPlaneTex, TriPlaneTexGeo)
+from training.sample_camera_distribution import (create_camera_from_angle,
+                                                 sample_camera)
 from uni_rep.camera.perspective_camera import PerspectiveCamera
 from uni_rep.render.neural_render import NeuralRender
-from training.discriminator_architecture import Discriminator
-from training.geometry_predictor import Conv3DImplicitSynthesisNetwork, TriPlaneTex, \
-    MappingNetwork, ToRGBLayer, TriPlaneTexGeo
+from uni_rep.rep_3d.dmtet import DMTetGeometry
 
 
 @persistence.persistent_class
@@ -682,6 +686,10 @@ class GeneratorDMTETMesh(torch.nn.Module):
         if generate_no_light:
             return img, mask, sdf, deformation, v_deformed, mesh_v, mesh_f, gen_camera, img_wo_light, tex_hard_mask
         return img, mask, sdf, deformation, v_deformed, mesh_v, mesh_f, gen_camera, tex_hard_mask
+
+    def update_triplane_const(self, feature_map):
+        # print("locating const", self.synthesis.generator.tri_plane_synthesis.b4.const.shape)
+        self.synthesis.generator.tri_plane_synthesis.b4.const_from_sd = feature_map
 
     def forward(
             self, z=None, c=None, truncation_psi=1, truncation_cutoff=None, update_emas=False, use_style_mixing=False,

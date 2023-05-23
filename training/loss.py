@@ -8,6 +8,7 @@
 
 import numpy as np
 import torch
+
 from torch_utils import training_stats
 from torch_utils.ops import conv2d_gradfix
 
@@ -34,21 +35,26 @@ def sdf_reg_loss_batch(sdf, all_edges):
 
 class StyleGAN2Loss(Loss):
     def __init__(
-            self, device, G, D, r1_gamma=10, style_mixing_prob=0, pl_weight=0,
+            self, device, G, D, F, r1_gamma=10, style_mixing_prob=0, pl_weight=0,
             gamma_mask=10, ):
         super().__init__()
         self.device = device
         self.G = G
         self.D = D
+        self.F = F
         self.r1_gamma = r1_gamma
         self.style_mixing_prob = style_mixing_prob
         self.pl_weight = pl_weight
         self.gamma_mask = gamma_mask
 
     def run_G(
-            self, z, c, update_emas=False, return_shape=False,
+            self, z, c, real_img, update_emas=False, return_shape=False,
     ):
         # Step 1: Map the sampled z code to w-space
+        feature_map = self.F(real_img[:,:3,:,:])
+        self.G.update_triplane_const(feature_map)
+        # print(feature_map.shape)
+
         ws = self.G.mapping(z, c, update_emas=update_emas)
         geo_z = torch.randn_like(z)
         ws_geo = self.G.mapping_geo(
@@ -102,7 +108,7 @@ class StyleGAN2Loss(Loss):
                 # First generate the rendered image of generated 3D shapes
                 gen_img, gen_sdf, _gen_ws, gen_camera, deformation, v_deformed, mesh_v, mesh_f, mask_pyramid, _gen_ws_geo, \
                 sdf_reg_loss, render_return_value = self.run_G(
-                    gen_z, gen_c, return_shape=True
+                    gen_z, gen_c, real_img, return_shape=True
                 )
 
                 camera_condition = None
@@ -149,7 +155,7 @@ class StyleGAN2Loss(Loss):
             with torch.autograd.profiler.record_function('Dgen_forward'):
                 # First generate the rendered image of generated 3D shapes
                 gen_img, _gen_ws, gen_camera, mask_pyramid, render_return_value = self.run_G(
-                    gen_z, gen_c, update_emas=True)
+                    gen_z, gen_c, real_img, update_emas=True)
                 if self.G.synthesis.data_camera_mode == 'shapenet_car' or self.G.synthesis.data_camera_mode == 'shapenet_chair' \
                         or self.G.synthesis.data_camera_mode == 'shapenet_motorbike' or self.G.synthesis.data_camera_mode == 'renderpeople' or \
                         self.G.synthesis.data_camera_mode == 'shapenet_plant' or self.G.synthesis.data_camera_mode == 'shapenet_vase' or \

@@ -8,14 +8,16 @@
 '''
 Utily functions for the inference
 '''
-import torch
-import numpy as np
 import os
-import PIL.Image
-from training.utils.utils_3d import save_obj, savemeshtes2
-import imageio
+
 import cv2
+import imageio
+import numpy as np
+import PIL.Image
+import torch
 from tqdm import tqdm
+
+from training.utils.utils_3d import save_obj, savemeshtes2
 
 
 def save_image_grid(img, fname, drange, grid_size):
@@ -145,7 +147,7 @@ def save_visualization_for_interpolation(
 
 
 def save_visualization(
-        G_ema, grid_z, grid_c, run_dir, cur_nimg, grid_size, cur_tick,
+        G_ema, F, grid_z, grid_c, grid_images, run_dir, cur_nimg, grid_size, cur_tick,
         image_snapshot_ticks=50,
         save_gif_name=None,
         save_all=True,
@@ -178,7 +180,9 @@ def save_visualization(
             images_list = []
             mesh_v_list = []
             mesh_f_list = []
-            for z, geo_z, c in zip(grid_tex_z, grid_z, grid_c):
+            for z, geo_z, c, real_img in zip(grid_tex_z, grid_z, grid_c, grid_images):
+                feature_map = F(real_img)
+                G_ema.update_triplane_const(feature_map)
                 img, mask, sdf, deformation, v_deformed, mesh_v, mesh_f, gen_camera, img_wo_light, tex_hard_mask = G_ema.generate_3d(
                     z=z, geo_z=geo_z, c=c, noise_mode='const',
                     generate_no_light=True, truncation_psi=0.7, camera=camera)
