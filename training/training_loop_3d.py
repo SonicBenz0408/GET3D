@@ -82,13 +82,15 @@ def training_loop(
         data_loader_kwargs={},  # Options for torch.utils.data.DataLoader.
         G_kwargs={},  # Options for generator network.
         D_kwargs={},  # Options for discriminator network.
+        C_kwargs={},  # Options for classifier network.
         G_opt_kwargs={},  # Options for generator optimizer.
         D_opt_kwargs={},  # Options for discriminator optimizer.
+        C_opt_kwargs={},  # Options for classifier optimizer.
         loss_kwargs={},  # Options for loss function.
         metrics=[],  # Metrics to evaluate during training.
         random_seed=0,  # Global random seed.
         num_gpus=1,  # Number of GPUs participating in the training.
-        rank=0,  # Rank of the current process in [0, num_gpus[.
+        rank=0,  # Rank of the current process in [0, num_gpus].
         batch_size=4,  # Total batch size for one training iteration. Can be larger than batch_gpu * num_gpus.
         batch_gpu=4,  # Number of samples processed at a time by one GPU.
         ema_kimg=10,  # Half-life of the exponential moving average (EMA) of generator weights.
@@ -149,10 +151,13 @@ def training_loop(
         print('Constructing networks...')
 
     # Constructing networks
+    # common_kwargs = dict(
+    #     c_dim=training_set.label_dim, img_resolution=training_set.resolution, img_channels=training_set.num_channels)
     common_kwargs = dict(
-        c_dim=training_set.label_dim, img_resolution=training_set.resolution, img_channels=training_set.num_channels)
+        img_resolution=training_set.resolution, img_channels=training_set.num_channels)
     G_kwargs['device'] = device
     D_kwargs['device'] = device
+    #C_kwargs['device'] = device
 
     if num_gpus > 1:
         torch.distributed.barrier()
@@ -160,6 +165,8 @@ def training_loop(
         device)  # subclass of torch.nn.Module
     D = dnnlib.util.construct_class_by_name(**D_kwargs, **common_kwargs).train().requires_grad_(False).to(
         device)  # subclass of torch.nn.Module
+    # C = dnnlib.util.construct_class_by_name(**C_kwargs, **common_kwargs).train().requires_grad_(False).to(
+    #     device)  # subclass of torch.nn.Module
     G_ema = copy.deepcopy(G).eval()  # deepcopy can make sure they are correct.
     if resume_pretrain is not None and (rank == 0):
         # We're not reusing the loading function from stylegan3 codebase,
@@ -226,7 +233,7 @@ def training_loop(
             save_image_grid(images, os.path.join(run_dir, 'reals.png'), drange=[0, 255], grid_size=grid_size)
         torch.manual_seed(1234)
         grid_z = torch.randn([images.shape[0], G.z_dim], device=device).split(1)  # This one is the latent code for shape generation
-        grid_c = torch.ones(images.shape[0], device=device).split(1)  # This one is not used, just for the compatiable with the code structure.
+        grid_c = torch.randint(0, D_kwargs['class_num'], [images.shape[0], G.c_dim], device=device).split(1)  # This one is the condition to controll generation of different classes
 
     if rank == 0:
         print('Initializing logs...')
@@ -360,7 +367,9 @@ def training_loop(
             if rank == 0:
                 print()
                 print('Aborting...')
-
+        
+        #print(grid_c[0].shape)
+        #print(grid_z[0].shape)
         # Save image snapshot.
         if (rank == 0) and (image_snapshot_ticks is not None) and (done or cur_tick % image_snapshot_ticks == 0) and (
                 not detect_anomaly):
@@ -370,6 +379,7 @@ def training_loop(
                     G_ema, grid_z, grid_c, run_dir, cur_nimg, grid_size, cur_tick,
                     image_snapshot_ticks,
                     save_all=(cur_tick % (image_snapshot_ticks * 4) == 0) and training_set.resolution < 512,
+                    class_num=D_kwargs['class_num']
                 )
                 print('==> saved visualization')
 
@@ -393,25 +403,25 @@ def training_loop(
                 torch.save(all_model_dict, snapshot_pkl.replace('.pkl', '.pt'))
 
         # Evaluate metrics.
-        if (snapshot_data is not None) and (len(metrics) > 0):
-            if rank == 0:
-                print('Evaluating metrics...')
-            with torch.no_grad():
-                for metric in metrics:
-                    if training_set_kwargs['split'] != 'all':
-                        if rank == 0:
-                            print('====> use validation set')
-                        training_set_kwargs['split'] = 'val'
-                    training_set_kwargs = clean_training_set_kwargs_for_metrics(training_set_kwargs)
-                    with torch.no_grad():
-                        result_dict = metric_main.calc_metric(
-                            metric=metric, G=snapshot_data['G_ema'],
-                            dataset_kwargs=training_set_kwargs, num_gpus=num_gpus, rank=rank, device=device)
-                    if rank == 0:
-                        metric_main.report_metric(result_dict, run_dir=run_dir, snapshot_pkl=snapshot_pkl)
-                    stats_metrics.update(result_dict.results)
-            if rank == 0:
-                print('==> finished evaluate metrics')
+        # if (snapshot_data is not None) and (len(metrics) > 0):
+        #     if rank == 0:
+        #         print('Evaluating metrics...')
+        #     with torch.no_grad():
+        #         for metric in metrics:
+        #             if training_set_kwargs['split'] != 'all':
+        #                 if rank == 0:
+        #                     print('====> use validation set')
+        #                 training_set_kwargs['split'] = 'val'
+        #             training_set_kwargs = clean_training_set_kwargs_for_metrics(training_set_kwargs)
+        #             with torch.no_grad():
+        #                 result_dict = metric_main.calc_metric(
+        #                     metric=metric, G=snapshot_data['G_ema'],
+        #                     dataset_kwargs=training_set_kwargs, num_gpus=num_gpus, rank=rank, device=device)
+        #             if rank == 0:
+        #                 metric_main.report_metric(result_dict, run_dir=run_dir, snapshot_pkl=snapshot_pkl)
+        #             stats_metrics.update(result_dict.results)
+        #     if rank == 0:
+        #         print('==> finished evaluate metrics')
 
         # Collect statistics.
         for phase in phases:
@@ -435,8 +445,8 @@ def training_loop(
             walltime = timestamp - start_time
             for name, value in stats_dict.items():
                 stats_tfevents.add_scalar(name, value.mean, global_step=global_step, walltime=walltime)
-            for name, value in stats_metrics.items():
-                stats_tfevents.add_scalar(f'Metrics/{name}', value, global_step=global_step, walltime=walltime)
+            #for name, value in stats_metrics.items():
+            #    stats_tfevents.add_scalar(f'Metrics/{name}', value, global_step=global_step, walltime=walltime)
             stats_tfevents.flush()
         if progress_fn is not None:
             progress_fn(cur_nimg // 1000, total_kimg)

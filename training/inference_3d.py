@@ -9,15 +9,19 @@
 
 import copy
 import os
+import pathlib
 
 import numpy as np
 import torch
+from rich.progress import track
+
 import dnnlib
-from torch_utils.ops import conv2d_gradfix
-from torch_utils.ops import grid_sample_gradfix
 from metrics import metric_main
-from training.inference_utils import save_visualization, save_visualization_for_interpolation, \
-    save_textured_mesh_for_inference, save_geo_for_inference
+from torch_utils.ops import conv2d_gradfix, grid_sample_gradfix
+from training.inference_utils import (save_geo_for_inference,
+                                      save_textured_mesh_for_inference,
+                                      save_visualization,
+                                      save_visualization_for_interpolation)
 
 
 def clean_training_set_kwargs_for_metrics(training_set_kwargs):
@@ -44,9 +48,7 @@ def inference(
         inference_generate_geo=False,
         **dummy_kawargs
 ):
-    from torch_utils.ops import upfirdn2d
-    from torch_utils.ops import bias_act
-    from torch_utils.ops import filtered_lrelu
+    from torch_utils.ops import bias_act, filtered_lrelu, upfirdn2d
     upfirdn2d._init()
     bias_act._init()
     filtered_lrelu._init()
@@ -63,7 +65,7 @@ def inference(
 
 
     common_kwargs = dict(
-        c_dim=0, img_resolution=training_set_kwargs['resolution'] if 'resolution' in training_set_kwargs else 1024, img_channels=3)
+        img_resolution=training_set_kwargs['resolution'] if 'resolution' in training_set_kwargs else 1024, img_channels=3)
     G_kwargs['device'] = device
 
     G = dnnlib.util.construct_class_by_name(**G_kwargs, **common_kwargs).train().requires_grad_(False).to(
@@ -77,24 +79,48 @@ def inference(
         G.load_state_dict(model_state_dict['G'], strict=True)
         G_ema.load_state_dict(model_state_dict['G_ema'], strict=True)
         # D.load_state_dict(model_state_dict['D'], strict=True)
-    grid_size = (5, 5)
+    
+    
+    target_modules = ["mapping", "mapping_geo"]
+    hook_data = {}
+    def get_activation(name):
+        def hook(module, input, output):
+            if name not in hook_data:
+                hook_data[name] = {
+                    "input": [],
+                    "c":[],
+                    "output": [],
+                }
+            hook_data[name]["input"].append(input[0].detach().cpu().numpy())
+            hook_data[name]["c"].append(input[1].detach().cpu().numpy())
+            hook_data[name]["output"].append(output.detach().cpu().numpy())
+        return hook
+
+    for name, layer in G_ema.named_modules():
+        if name in target_modules:
+            print(name, layer)
+            layer.register_forward_hook(get_activation(name))
+    
+    print('==> generate ')
+    # for i in track(range(100)):
+    grid_size = (10, 10)
     n_shape = grid_size[0] * grid_size[1]
     grid_z = torch.randn([n_shape, G.z_dim], device=device).split(1)  # random code for geometry
     grid_tex_z = torch.randn([n_shape, G.z_dim], device=device).split(1)  # random code for texture
-    grid_c = torch.ones(n_shape, device=device).split(1)
+    grid_c = torch.randint(0, D_kwargs['class_dim'], [n_shape, G.c_dim], device=device).split(1)
 
-    print('==> generate ')
     save_visualization(
         G_ema, grid_z, grid_c, run_dir, 0, grid_size, 0,
         save_all=False,
-        grid_tex_z=grid_tex_z
+        grid_tex_z=grid_tex_z,
+        class_dim=D_kwargs['class_dim']
     )
 
     if inference_to_generate_textured_mesh:
         print('==> generate inference 3d shapes with texture')
         save_textured_mesh_for_inference(
             G_ema, grid_z, grid_c, run_dir, save_mesh_dir='texture_mesh_for_inference',
-            c_to_compute_w_avg=None, grid_tex_z=grid_tex_z)
+            c_to_compute_w_avg=None, grid_tex_z=grid_tex_z, class_dim=D_kwargs['class_dim'])
 
     if inference_save_interpolation:
         print('==> generate interpolation results')
@@ -114,3 +140,18 @@ def inference(
     if inference_generate_geo:
         print('==> generate 7500 shapes for evaluation')
         save_geo_for_inference(G_ema, run_dir)
+
+    for name in target_modules:
+        hook_save_dir = pathlib.Path(run_dir) / 'hook' / name
+        hook_save_dir.mkdir(parents=True, exist_ok=True)
+        
+        all_input = np.concatenate(hook_data['mapping']["input"])
+        all_c = np.concatenate(hook_data['mapping']["c"])
+        all_output = np.concatenate(hook_data['mapping']["output"])
+
+        print(all_input.shape)
+        print(all_output.shape)
+        
+        np.save(hook_save_dir / 'input.npy', all_input)
+        np.save(hook_save_dir / 'c.npy', all_c)
+        np.save(hook_save_dir / 'output.npy', all_output)

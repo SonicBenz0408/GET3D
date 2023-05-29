@@ -13,6 +13,7 @@ import zipfile
 import torch
 import dnnlib
 import cv2
+from pathlib import Path
 
 try:
     import pyspng
@@ -186,6 +187,8 @@ class ImageFolderDataset(Dataset):
                         self.root, len(self._all_fnames)))
                 super().__init__(name=name, raw_shape=self._raw_shape, **super_kwargs)
                 return
+            syn_idx = os.listdir(root)[0]
+            root = Path(root) / syn_idx
             folder_list = sorted(os.listdir(root))
             if data_camera_mode == 'shapenet_chair' or data_camera_mode == 'shapenet_car':
                 if data_camera_mode == 'shapenet_car':
@@ -236,7 +239,7 @@ class ImageFolderDataset(Dataset):
             for folder in folder_list:
                 rgb_list = sorted(os.listdir(folder))
                 rgb_list = [n for n in rgb_list if n.endswith('.png') or n.endswith('.jpg')]
-                rgb_file_name_list = [os.path.join(folder, n) for n in rgb_list]
+                rgb_file_name_list = [os.path.join(folder, n).replace('\\', '/') for n in rgb_list]
                 all_img_list.extend(rgb_file_name_list)
                 all_mask_list.extend(rgb_list)
 
@@ -317,7 +320,7 @@ class ImageFolderDataset(Dataset):
             mask = np.ones(1)
         img = resize_img.transpose(2, 0, 1)
         background = np.zeros_like(img)
-        img = img * (mask > 0).astype(np.float) + background * (1 - (mask > 0).astype(np.float))
+        img = img * (mask > 0).astype(np.float64) + background * (1 - (mask > 0).astype(np.float64))
         return np.ascontiguousarray(img), condinfo, np.ascontiguousarray(mask)
 
     def _load_raw_image(self, raw_idx):
@@ -332,3 +335,84 @@ class ImageFolderDataset(Dataset):
 
     def _load_raw_labels(self):
         return None
+
+class MultiClassImageFolderDataset(Dataset):
+    def __init__(
+            self,
+            path,  # Path to directory or zip.
+            chosen_classes=["car", "motorbike", "chair"],
+            resolution=None,  # Ensure specific resolution, None = highest available.
+            # data_camera_mode='shapenet_car',
+            add_camera_cond=False,
+            split='all',
+            **super_kwargs  # Additional arguments for the Dataset base class.
+    ):
+        
+        # Find sub class root under root folder
+        self._root = Path(path)
+        self._sub_class_roots = os.listdir(self._root)
+        
+        # Extract chosen classes from existing folders and create sub class dataset
+        self._sub_class_datasets = []
+        for (i, class_name) in enumerate(chosen_classes):
+            if class_name in self._sub_class_roots:
+                sub_class_root = self._root / class_name
+                data_camera_mode = f"shapenet_{class_name}"
+                print(data_camera_mode)
+                new_dataset = ImageFolderDataset(
+                    path=sub_class_root / "img",  # Path to directory or zip.
+                    camera_path=sub_class_root / "camera",  # Path to camera
+                    resolution=resolution,  # Ensure specific resolution, None = highest available.
+                    data_camera_mode=data_camera_mode,
+                    add_camera_cond=add_camera_cond,
+                    split=split,
+                    **super_kwargs  # Additional arguments for the Dataset base class.)
+                )
+                self._sub_class_datasets.append(new_dataset)
+            else:
+                raise Exception(f"Folder not found for class {class_name} under {self._root}")
+
+        #
+        self._size = sum([len(d) for d in self._sub_class_datasets])
+        self._labels = np.zeros(self._size, dtype=np.int64)
+        self._sub_class_idx_map = np.zeros(self._size, dtype=np.int64)
+        
+        idx = 0
+        for i, dataset in enumerate(self._sub_class_datasets):
+            self._labels[idx: idx+len(dataset)] = i
+            self._sub_class_idx_map[idx: idx+len(dataset)] = np.arange(0, len(dataset), dtype=np.int64)
+            idx += len(dataset)
+    
+        name = "-".join(chosen_classes)
+        print(
+            '==> use image path: %s, num images: %d' % (self._root, self._size))
+        raw_shape = [self._size] + list(self._sub_class_datasets[0]._load_raw_image(0).shape)
+        
+        print(name)
+        print(raw_shape)
+        super().__init__(name=name, raw_shape=raw_shape, **super_kwargs)
+
+    def __getitem__(self, idx):
+        label = self._labels[idx]
+        sub_class_idx = self._sub_class_idx_map[idx]
+        img, condinfo, mask = self._sub_class_datasets[label][sub_class_idx]
+        condinfo = np.append(condinfo, label)
+        # print(img.shape)
+        # print(condinfo.shape)
+        # print(mask.shape)
+        # raise
+        return img, condinfo, mask
+
+    def get_label(self, idx):
+        label = self._labels[idx]
+        return label.copy()
+
+    def _load_raw_image(self, raw_idx):  # to be overridden by subclass
+        return
+
+    def _load_raw_labels(self):  # to be overridden by subclass
+        return
+
+    def __len__(self):
+        return self._size
+

@@ -1,0 +1,1 @@
+python train_3d_multi_class.py --outdir=./save_inference_results/car-chair --data=./dataset --gpus=1 --batch=4 --gamma=40 --dmtet_scale 1.0  --use_shapenet_split 1  --one_3d_generator 1  --fp32 0 --inference_vis 1 --resume_pretrain /home/mason/VLLAB/GET3D/log/00002-stylegan2-car-chair-gpus1-batch32-gamma80/network-snapshot-001228.pt
