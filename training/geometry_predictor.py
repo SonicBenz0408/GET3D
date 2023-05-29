@@ -748,6 +748,7 @@ class SynthesisBlockTexGeo(torch.nn.Module):
         if in_channels == 0:
             self.const = torch.nn.Parameter(torch.randn([out_channels, resolution, resolution], device=device))
             self.const_from_sd = None
+            self.conv_const_sd = nn.Conv2d(in_channels=out_channels, out_channels=out_channels, kernel_size=1, stride=1, padding=0)
 
         if in_channels != 0:
             self.conv0 = SynthesisLayer(
@@ -793,6 +794,7 @@ class SynthesisBlockTexGeo(torch.nn.Module):
         if self.in_channels == 0:
             x = self.const_from_sd.to(dtype=dtype, memory_format=memory_format)
             x += self.const.to(dtype=dtype, memory_format=memory_format)
+            x = self.conv_const_sd(x)
             # x = x.unsqueeze(0).repeat([ws_geo.shape[0], 1, 1, 1])
         else:
             misc.assert_shape(x, [None, self.in_channels, self.resolution // 2, self.resolution // 2])

@@ -147,7 +147,7 @@ def save_visualization_for_interpolation(
 
 
 def save_visualization(
-        G_ema, F, grid_z, grid_c, grid_images, run_dir, cur_nimg, grid_size, cur_tick,
+        G_ema, F, grid_z, grid_c, grid_images, grid_captions, run_dir, cur_nimg, grid_size, cur_tick,
         image_snapshot_ticks=50,
         save_gif_name=None,
         save_all=True,
@@ -180,8 +180,8 @@ def save_visualization(
             images_list = []
             mesh_v_list = []
             mesh_f_list = []
-            for z, geo_z, c, real_img in zip(grid_tex_z, grid_z, grid_c, grid_images):
-                feature_map = F(real_img)
+            for z, geo_z, c, real_img, caption in zip(grid_tex_z, grid_z, grid_c, grid_images, grid_captions):
+                feature_map = F(real_img, [caption])
                 G_ema.update_triplane_const(feature_map)
                 img, mask, sdf, deformation, v_deformed, mesh_v, mesh_f, gen_camera, img_wo_light, tex_hard_mask = G_ema.generate_3d(
                     z=z, geo_z=geo_z, c=c, noise_mode='const',

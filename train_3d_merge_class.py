@@ -17,7 +17,7 @@ import torch
 import dnnlib
 from metrics import metric_main
 from torch_utils import custom_ops, training_stats
-from training import inference_3d, training_loop_3d
+from training import inference_3d, training_loop_3d_sd
 
 
 # ----------------------------------------------------------------------------
@@ -46,7 +46,7 @@ def subprocess_fn(rank, c, temp_dir):
         inference_3d.inference(rank=rank, **c)
     # Execute training loop.
     else:
-        training_loop_3d.training_loop(rank=rank, **c)
+        training_loop_3d_sd.training_loop(rank=rank, **c)
 
 
 # ----------------------------------------------------------------------------
@@ -206,14 +206,17 @@ def parse_comma_separated_list(s):
 # Misc settings.
 @click.option('--desc', help='String to include in result dir name', metavar='STR', type=str)
 @click.option('--metrics', help='Quality metrics', metavar='[NAME|A,B,C|none]', type=parse_comma_separated_list, default='fid50k', show_default=True)
-@click.option('--kimg', help='Total training duration', metavar='KIMG', type=click.IntRange(min=1), default=20000, show_default=True)
+@click.option('--kimg', help='Total training duration', metavar='KIMG', type=click.IntRange(min=1), default=100000, show_default=True)
 @click.option('--tick', help='How often to print progress', metavar='KIMG', type=click.IntRange(min=1), default=1, show_default=True)  ##
-@click.option('--snap', help='How often to save snapshots', metavar='TICKS', type=click.IntRange(min=1), default=50, show_default=True)  ###
+@click.option('--snap', help='How often to save snapshots', metavar='TICKS', type=click.IntRange(min=1), default=3000, show_default=True)  ###
 @click.option('--seed', help='Random seed', metavar='INT', type=click.IntRange(min=0), default=0, show_default=True)
 @click.option('--fp32', help='Disable mixed-precision', metavar='BOOL', type=bool, default=True, show_default=True)  # Let's use fp32 all the case without clamping
 @click.option('--nobench', help='Disable cuDNN benchmarking', metavar='BOOL', type=bool, default=False, show_default=True)
 @click.option('--workers', help='DataLoader worker processes', metavar='INT', type=click.IntRange(min=0), default=3, show_default=True)
 @click.option('-n', '--dry-run', help='Print training options and exit', is_flag=True)
+
+@click.option('--blip_config', help='String to include in result dir name', metavar='STR', type=str, default='blip/nocaps.yaml')
+
 def main(**kwargs):
     # Initialize config.
     print('==> start')
@@ -281,7 +284,7 @@ def main(**kwargs):
     c.D_kwargs.epilogue_kwargs.mbstd_group_size = opts.mbstd_group
     c.loss_kwargs.gamma_mask = opts.gamma if opts.gamma_mask == 0.0 else opts.gamma_mask
     c.loss_kwargs.r1_gamma = opts.gamma
-    c.G_opt_kwargs.lr = (0.002 if opts.cfg == 'stylegan2' else 0.0025) if opts.glr is None else opts.glr
+    c.G_opt_kwargs.lr = (1e-5 if opts.cfg == 'stylegan2' else 0.0025) if opts.glr is None else opts.glr
     c.D_opt_kwargs.lr = opts.dlr
     c.metrics = opts.metrics
     c.total_kimg = opts.kimg
@@ -289,17 +292,8 @@ def main(**kwargs):
     c.image_snapshot_ticks = c.network_snapshot_ticks = opts.snap
     c.random_seed = c.training_set_kwargs.random_seed = opts.seed
     c.data_loader_kwargs.num_workers = opts.workers
-    c.network_snapshot_ticks = 200
+    # c.network_snapshot_ticks = 200
     # Sanity checks.
-    if c.batch_size % c.num_gpus != 0:
-        raise click.ClickException('--batch must be a multiple of --gpus')
-    if c.batch_size % (c.num_gpus * c.batch_gpu) != 0:
-        raise click.ClickException('--batch must be a multiple of --gpus times --batch-gpu')
-    if c.batch_gpu < c.D_kwargs.epilogue_kwargs.mbstd_group_size:
-        raise click.ClickException('--batch-gpu cannot be smaller than --mbstd')
-    if any(not metric_main.is_valid_metric(metric) for metric in c.metrics):
-        raise click.ClickException(
-            '\n'.join(['--metrics can only contain the following values:'] + metric_main.list_valid_metrics()))
 
     # Base configuration.
     c.ema_kimg = c.batch_size * 10 / 32
@@ -315,6 +309,8 @@ def main(**kwargs):
     if opts.nobench:
         c.cudnn_benchmark = False
 
+    c.blip_config = opts.blip_config
+    
     # Description string.
     desc = f'{opts.cfg:s}-{dataset_name:s}-gpus{c.num_gpus:d}-batch{c.batch_size:d}-gamma{c.loss_kwargs.r1_gamma:g}'
     if opts.desc is not None:
