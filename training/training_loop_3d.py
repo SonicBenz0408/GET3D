@@ -88,7 +88,7 @@ def training_loop(
         metrics=[],  # Metrics to evaluate during training.
         random_seed=0,  # Global random seed.
         num_gpus=1,  # Number of GPUs participating in the training.
-        rank=0,  # Rank of the current process in [0, num_gpus[.
+        rank=0,  # Rank of the current process in [0, num_gpus].
         batch_size=4,  # Total batch size for one training iteration. Can be larger than batch_gpu * num_gpus.
         batch_gpu=4,  # Number of samples processed at a time by one GPU.
         ema_kimg=10,  # Half-life of the exponential moving average (EMA) of generator weights.
@@ -151,8 +151,11 @@ def training_loop(
     # Constructing networks
     common_kwargs = dict(
         c_dim=training_set.label_dim, img_resolution=training_set.resolution, img_channels=training_set.num_channels)
+    # common_kwargs = dict(
+    #     img_resolution=training_set.resolution, img_channels=training_set.num_channels)
     G_kwargs['device'] = device
     D_kwargs['device'] = device
+    #C_kwargs['device'] = device
 
     if num_gpus > 1:
         torch.distributed.barrier()
@@ -160,6 +163,8 @@ def training_loop(
         device)  # subclass of torch.nn.Module
     D = dnnlib.util.construct_class_by_name(**D_kwargs, **common_kwargs).train().requires_grad_(False).to(
         device)  # subclass of torch.nn.Module
+    # C = dnnlib.util.construct_class_by_name(**C_kwargs, **common_kwargs).train().requires_grad_(False).to(
+    #     device)  # subclass of torch.nn.Module
     G_ema = copy.deepcopy(G).eval()  # deepcopy can make sure they are correct.
     if resume_pretrain is not None and (rank == 0):
         # We're not reusing the loading function from stylegan3 codebase,
@@ -169,7 +174,6 @@ def training_loop(
         G.load_state_dict(model_state_dict['G'], strict=True)
         G_ema.load_state_dict(model_state_dict['G_ema'], strict=True)
         D.load_state_dict(model_state_dict['D'], strict=True)
-
     if rank == 0:
         print('Setting up augmentation...')
 
@@ -228,6 +232,7 @@ def training_loop(
         grid_z = torch.randn([images.shape[0], G.z_dim], device=device).split(1)  # This one is the latent code for shape generation
         grid_c = torch.ones(images.shape[0], device=device).split(1)  # This one is not used, just for the compatiable with the code structure.
 
+
     if rank == 0:
         print('Initializing logs...')
     stats_collector = training_stats.Collector(regex='.*')
@@ -272,6 +277,7 @@ def training_loop(
             all_gen_z = [phase_gen_z.split(batch_gpu) for phase_gen_z in all_gen_z.split((batch_size // num_gpus))]
             all_gen_c = [training_set.get_label(np.random.randint(len(training_set))) for _ in
                          range(len(phases) * (batch_size // num_gpus))]
+            
             all_gen_c = torch.from_numpy(np.stack(all_gen_c)).pin_memory().to(device)
             all_gen_c = [phase_gen_c.split(batch_gpu) for phase_gen_c in all_gen_c.split(batch_size // num_gpus)]
         optim_step += 1
@@ -360,7 +366,9 @@ def training_loop(
             if rank == 0:
                 print()
                 print('Aborting...')
-
+        
+        #print(grid_c[0].shape)
+        #print(grid_z[0].shape)
         # Save image snapshot.
         if (rank == 0) and (image_snapshot_ticks is not None) and (done or cur_tick % image_snapshot_ticks == 0) and (
                 not detect_anomaly):

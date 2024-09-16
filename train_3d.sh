@@ -1,0 +1,1 @@
+python train_3d.py --outdir=./log --data=../data/ShapeNet/render/car/img --camera_path ../data/ShapeNet/render/car/camera --gpus=1 --batch=32 --gamma=40 --dmtet_scale 1.0  --use_shapenet_split 1  --data_camera_mode shapenet_car  --one_3d_generator 1  --fp32 0

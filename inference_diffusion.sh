@@ -1,0 +1,1 @@
+python inference_diffusion.py --outdir=save_inference_results/shapenet_car  --gpus=1 --mbstd-group=1 --batch=4 --gamma=80 --data_camera_mode shapenet_car  --dmtet_scale 1.0  --use_shapenet_split 0  --one_3d_generator 1  --fp32 0 --inference_vis 1 --resume_pretrain log/only_tex_cond/diffusion-network-snapshot-85000.pt --backbone_pretrain pretrained_model/shapenet_car.pt

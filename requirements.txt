@@ -1,0 +1,9 @@
+accelerate
+einops
+ema-pytorch
+pillow
+pytorch-fid
+tqdm
+ftfy
+regex
+git+https://github.com/openai/CLIP.git

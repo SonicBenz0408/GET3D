@@ -36,12 +36,13 @@ def xfm_points(points, matrix, use_python=True):
 
 
 class NeuralRender(Renderer):
-    def __init__(self, device='cuda', camera_model=None):
+    def __init__(self, device='cuda', camera_model=None, use_opengl=True):
         super(NeuralRender, self).__init__()
         self.device = device
         self.ctx = None
         self.projection_mtx = None
         self.camera = camera_model
+        self.use_opengl = use_opengl
 
     def render_mesh(
             self,
@@ -56,7 +57,10 @@ class NeuralRender(Renderer):
     ):
         assert not hierarchical_mask
         if self.ctx is None:
-            self.ctx = dr.RasterizeGLContext(device=self.device)
+            if self.use_opengl:
+                self.ctx = dr.RasterizeGLContext(device=self.device)
+            else:
+                self.ctx = dr.RasterizeCudaContext(device=self.device)
 
         mtx_in = torch.tensor(camera_mv_bx4x4, dtype=torch.float32, device=device) if not torch.is_tensor(camera_mv_bx4x4) else camera_mv_bx4x4
         v_pos = xfm_points(mesh_v_pos_bxnx3, mtx_in)  # Rotate it to camera coordinates

@@ -5,7 +5,7 @@
 # and any modifications thereto.  Any use, reproduction, disclosure or
 # distribution of this software and related documentation without an express
 # license agreement from NVIDIA CORPORATION & AFFILIATES is strictly prohibited.
-
+import numpy as np
 import os
 import click
 import re
@@ -13,28 +13,22 @@ import json
 import tempfile
 import torch
 import dnnlib
-from training import training_loop_3d
+from PIL import Image
+from clip import clip
+from training import training_loop_diffusion_3d
 from metrics import metric_main
 from torch_utils import training_stats
 from torch_utils import custom_ops
-from training import inference_3d
-
-
+from torch_utils.ops import conv2d_gradfix
+from torch_utils.ops import grid_sample_gradfix
+from training.inference_utils import save_visualization, save_visualization_with_cond, save_visualization_for_interpolation, \
+    save_textured_mesh_for_inference, save_geo_for_inference
+from denoising_diffusion_pytorch import Unet1D, GaussianDiffusion1D
+from ema_pytorch import EMA
+    
 # ----------------------------------------------------------------------------
 def subprocess_fn(rank, c, temp_dir):
     dnnlib.util.Logger(file_name=os.path.join(c.run_dir, 'log.txt'), file_mode='a', should_flush=True)
-
-    # Init torch.distributed.
-    if c.num_gpus > 1:
-        init_file = os.path.abspath(os.path.join(temp_dir, '.torch_distributed_init'))
-        if os.name == 'nt':
-            init_method = 'file:///' + init_file.replace('\\', '/')
-            torch.distributed.init_process_group(
-                backend='gloo', icfgnit_method=init_method, rank=rank, world_size=c.num_gpus)
-        else:
-            init_method = f'file://{init_file}'
-            torch.distributed.init_process_group(
-                backend='nccl', init_method=init_method, rank=rank, world_size=c.num_gpus)
 
     # Init torch_utils.
     sync_device = torch.device('cuda', rank) if c.num_gpus > 1 else None
@@ -42,15 +36,129 @@ def subprocess_fn(rank, c, temp_dir):
     if rank != 0:
         custom_ops.verbosity = 'none'
 
-    if c.inference_vis:
-        inference_3d.inference(rank=rank, **c)
-    # Execute training loop.
-    else:
-        training_loop_3d.training_loop(rank=rank, **c)
+    inference_diff(**c)
 
 
 # ----------------------------------------------------------------------------
+def inference_diff(
+        run_dir='.',  # Output directory.
+        training_set_kwargs={},  # Options for training set.
+        G_kwargs={},  # Options for generator network.
+        D_kwargs={},  # Options for discriminator network.
+        metrics=[],  # Metrics to evaluate during training.
+        random_seed=0,  # Global random seed.
+        num_gpus=1,  # Number of GPUs participating in the training.
+        rank=0,  # Rank of the current process in [0, num_gpus[.
+        inference_vis=False,
+        inference_to_generate_textured_mesh=False,
+        resume_pretrain=None,
+        backbone_pretrain=None,
+        inference_save_interpolation=False,
+        inference_compute_fid=False,
+        inference_generate_geo=False,
+        diff_ch=4,
+        ema_update_every=10,
+        ema_decay=0.995,
+        image_cond=None,
+        text_cond=None,
+        **dummy_kawargs
+):
+    from torch_utils.ops import upfirdn2d
+    from torch_utils.ops import bias_act
+    from torch_utils.ops import filtered_lrelu
+    upfirdn2d._init()
+    bias_act._init()
+    filtered_lrelu._init()
 
+    device = torch.device('cuda', rank)
+    np.random.seed(random_seed * num_gpus + rank)
+    torch.manual_seed(random_seed * num_gpus + rank)
+    torch.backends.cudnn.enabled = True
+    torch.backends.cudnn.benchmark = True  # Improves training speed.
+    torch.backends.cuda.matmul.allow_tf32 = True  # Improves numerical accuracy.
+    torch.backends.cudnn.allow_tf32 = True  # Improves numerical accuracy.
+    conv2d_gradfix.enabled = True  # Improves training speed.
+    grid_sample_gradfix.enabled = True  # Avoids errors with the augmentation pipe.
+
+
+    common_kwargs = dict(
+        c_dim=0, img_resolution=training_set_kwargs['resolution'] if 'resolution' in training_set_kwargs else 1024, img_channels=3)
+
+    G_kwargs['device'] = device
+
+    if num_gpus > 1:
+        torch.distributed.barrier()
+    
+    G_ema = dnnlib.util.construct_class_by_name(**G_kwargs, **common_kwargs).eval().requires_grad_(False).to(device)  # subclass of torch.nn.Module
+
+    geo_Unet = Unet1D(dim=diff_ch, dim_mults=(1, 2, 4, 8), channels=1, resnet_block_groups=2).to(device)
+    geo_diffusion_model = GaussianDiffusion1D(geo_Unet, seq_length=G_kwargs.w_dim, timesteps=1000, objective='pred_v').to(device)
+    tex_Unet = Unet1D(dim=diff_ch, dim_mults=(1, 2, 4, 8), channels=1, resnet_block_groups=2).to(device)
+    tex_diffusion_model = GaussianDiffusion1D(tex_Unet, seq_length=G_kwargs.w_dim, timesteps=1000, objective='pred_v').to(device)
+
+    ema_geo_diffusion_model = EMA(geo_diffusion_model, beta=ema_decay, update_every=ema_update_every)
+    ema_tex_diffusion_model = EMA(tex_diffusion_model, beta=ema_decay, update_every=ema_update_every)
+    ema_geo_diffusion_model.to(device)
+    ema_tex_diffusion_model.to(device)
+
+    if resume_pretrain is not None and (rank == 0):
+        print('==> resume diffusion model from pretrained path %s' % (resume_pretrain))
+        model_state_dict = torch.load(resume_pretrain, map_location=device)
+        geo_diffusion_model.load_state_dict(model_state_dict['geo_diff'], strict=True)
+        tex_diffusion_model.load_state_dict(model_state_dict['tex_diff'], strict=True)
+        ema_geo_diffusion_model.load_state_dict(model_state_dict['ema_geo_diff'], strict=True)
+        ema_tex_diffusion_model.load_state_dict(model_state_dict['ema_tex_diff'], strict=True)
+
+    if backbone_pretrain is not None and (rank == 0):
+        print('==> resume backbone from pretrained path %s' % (backbone_pretrain))
+        model_state_dict = torch.load(backbone_pretrain, map_location=device)
+        G_ema.load_state_dict(model_state_dict['G_ema'], strict=True)
+
+    grid_size = (5, 5)
+    n_shape = grid_size[0] * grid_size[1]
+    grid_z = torch.randn([n_shape, G_kwargs.w_dim], device=device).unsqueeze(1).split(1)  # random code for geometry
+    grid_tex_z = torch.randn([n_shape, G_kwargs.w_dim], device=device).unsqueeze(1).split(1)  # random code for texture
+    grid_c = torch.ones(n_shape, device=device).split(1)
+
+    print('==> generate ')
+    save_visualization_with_cond(
+        G_ema, ema_geo_diffusion_model.ema_model, ema_tex_diffusion_model.ema_model, None, grid_z, grid_c, run_dir, 0, grid_size, 0,
+        save_all=False,
+        grid_tex_z=grid_tex_z
+    )
+
+    # if inference_to_generate_textured_mesh:
+    #     print('==> generate inference 3d shapes with texture')
+    #     save_textured_mesh_for_inference(
+    #         G_ema, grid_z, grid_c, run_dir, save_mesh_dir='texture_mesh_for_inference',
+    #         c_to_compute_w_avg=None, grid_tex_z=grid_tex_z)
+
+    # if inference_save_interpolation:
+    #     print('==> generate interpolation results')
+    #     save_visualization_for_interpolation(G_ema, save_dir=os.path.join(run_dir, 'interpolation'))
+
+    # if inference_compute_fid:
+    #     print('==> compute FID scores for generation')
+    #     for metric in metrics:
+    #         training_set_kwargs = clean_training_set_kwargs_for_metrics(training_set_kwargs)
+    #         training_set_kwargs['split'] = 'test'
+    #         result_dict = metric_main.calc_metric(
+    #             metric=metric, G=G_ema,
+    #             dataset_kwargs=training_set_kwargs, num_gpus=num_gpus, rank=rank,
+    #             device=device)
+    #         metric_main.report_metric(result_dict, run_dir=run_dir, snapshot_pkl=resume_pretrain)
+
+    # if inference_generate_geo:
+    #     print('==> generate 7500 shapes for evaluation')
+    #     save_geo_for_inference(G_ema, run_dir)
+
+
+
+
+
+
+
+# ----------------------------------------------------------------------------
 def launch_training(c, desc, outdir, dry_run):
     dnnlib.util.Logger(should_flush=True)
 
@@ -61,11 +169,11 @@ def launch_training(c, desc, outdir, dry_run):
     prev_run_ids = [re.match(r'^\d+', x) for x in prev_run_dirs]
     prev_run_ids = [int(x.group()) for x in prev_run_ids if x is not None]
     cur_run_id = max(prev_run_ids, default=-1) + 1
-    if c.inference_vis:
-        c.run_dir = os.path.join(outdir, 'inference')
-    else:
-        c.run_dir = os.path.join(outdir, f'{cur_run_id:05d}-{desc}')
-        assert not os.path.exists(c.run_dir)
+    # if c.inference_vis:
+    #     c.run_dir = os.path.join(outdir, 'inference')
+   
+    c.run_dir = os.path.join(outdir, f'{cur_run_id:05d}-{desc}')
+    assert not os.path.exists(c.run_dir)
 
     # Print options.
     print()
@@ -75,12 +183,12 @@ def launch_training(c, desc, outdir, dry_run):
     print(f'Output directory:    {c.run_dir}')
     print(f'Number of GPUs:      {c.num_gpus}')
     print(f'Batch size:          {c.batch_size} images')
-    print(f'Training duration:   {c.total_kimg} kimg')
-    print(f'Dataset path:        {c.training_set_kwargs.path}')
-    print(f'Dataset size:        {c.training_set_kwargs.max_size} images')
-    print(f'Dataset resolution:  {c.training_set_kwargs.resolution}')
-    print(f'Dataset labels:      {c.training_set_kwargs.use_labels}')
-    print(f'Dataset x-flips:     {c.training_set_kwargs.xflip}')
+    print(f'Training duration:   {c.train_num_steps} steps')
+    # print(f'Dataset path:        {c.training_set_kwargs.path}')
+    # print(f'Dataset size:        {c.training_set_kwargs.max_size} images')
+    # print(f'Dataset resolution:  {c.training_set_kwargs.resolution}')
+    # print(f'Dataset labels:      {c.training_set_kwargs.use_labels}')
+    # print(f'Dataset x-flips:     {c.training_set_kwargs.xflip}')
     print()
 
     # Dry run?
@@ -106,37 +214,6 @@ def launch_training(c, desc, outdir, dry_run):
 
 
 # ----------------------------------------------------------------------------
-def init_dataset_kwargs(data, opt=None):
-    try:
-        if opt.use_shapenet_split:
-            dataset_kwargs = dnnlib.EasyDict(
-                class_name='training.dataset.ImageFolderDataset',
-                path=data, use_labels=True, max_size=None, xflip=False,
-                resolution=opt.img_res,
-                data_camera_mode=opt.data_camera_mode,
-                add_camera_cond=opt.add_camera_cond,
-                camera_path=opt.camera_path,
-                split='test' if opt.inference_vis else 'train',
-            )
-        else:
-            dataset_kwargs = dnnlib.EasyDict(
-                class_name='training.dataset.ImageFolderDataset',
-                path=data, use_labels=True, max_size=None, xflip=False, resolution=opt.img_res,
-                data_camera_mode=opt.data_camera_mode,
-                add_camera_cond=opt.add_camera_cond,
-                camera_path=opt.camera_path,
-            )
-        dataset_obj = dnnlib.util.construct_class_by_name(**dataset_kwargs)  # Subclass of training.dataset.Dataset.
-        # dataset_kwargs.camera_path = opt.camera_path
-        dataset_kwargs.resolution = dataset_obj.resolution  # Be explicit about resolution.
-        dataset_kwargs.use_labels = dataset_obj.has_labels  # Be explicit about labels.
-        dataset_kwargs.max_size = len(dataset_obj)  # Be explicit about dataset size.
-        return dataset_kwargs, dataset_obj.name
-    except IOError as err:
-        raise click.ClickException(f'--data: {err}')
-
-
-# ----------------------------------------------------------------------------
 
 def parse_comma_separated_list(s):
     if isinstance(s, list):
@@ -158,7 +235,8 @@ def parse_comma_separated_list(s):
 # My custom configs
 ### Configs for inference
 @click.option('--resume_pretrain', help='Resume from given network pickle', metavar='[PATH|URL]', type=str)
-@click.option('--inference_vis', help='whther we run infernce', metavar='BOOL', type=bool, default=False, show_default=True)
+@click.option('--backbone_pretrain', help='Resume from given network pickle', metavar='[PATH|URL]', type=str)
+@click.option('--inference_vis', help='whther we run infernce', metavar='BOOL', type=bool, default=True, show_default=True)
 @click.option('--inference_to_generate_textured_mesh', help='inference to generate textured meshes', metavar='BOOL', type=bool, default=False, show_default=False)
 @click.option('--inference_save_interpolation', help='inference to generate interpolation results', metavar='BOOL', type=bool, default=False, show_default=False)
 @click.option('--inference_compute_fid', help='inference to generate interpolation results', metavar='BOOL', type=bool, default=False, show_default=False)
@@ -190,31 +268,34 @@ def parse_comma_separated_list(s):
 @click.option('--d_architecture', help='The architecture for discriminator', metavar='STR', type=str, default='skip', show_default=True)
 @click.option('--use_pl_length', help='whether we apply path length regularization', metavar='BOOL', type=bool, default=False, show_default=False)  # We didn't use path lenth regularzation to avoid nan error
 @click.option('--gamma_mask', help='R1 regularization weight for mask', metavar='FLOAT', type=click.FloatRange(min=0), default=0.0, required=False)
-@click.option('--d_reg_interval', help='The internal for R1 regularization', metavar='INT', type=click.IntRange(min=1), default=16)
 @click.option('--add_camera_cond', help='Whether we add camera as condition for discriminator', metavar='BOOL', type=bool, default=True, show_default=True)
 ## Miscs
 # Optional features.
 @click.option('--cond', help='Train conditional model', metavar='BOOL', type=bool, default=False, show_default=True)
 @click.option('--freezed', help='Freeze first layers of D', metavar='INT', type=click.IntRange(min=0), default=0, show_default=True)
 # Misc hyperparameters.
-@click.option('--batch-gpu', help='Limit batch size per GPU', metavar='INT', type=click.IntRange(min=1), default=4)
 @click.option('--cbase', help='Capacity multiplier', metavar='INT', type=click.IntRange(min=1), default=32768, show_default=True)
 @click.option('--cmax', help='Max. feature maps', metavar='INT', type=click.IntRange(min=1), default=512, show_default=True)
-@click.option('--glr', help='G learning rate  [default: varies]', metavar='FLOAT', type=click.FloatRange(min=0))
-@click.option('--dlr', help='D learning rate', metavar='FLOAT', type=click.FloatRange(min=0), default=0.002, show_default=True)
+@click.option('--lr', help='Diffusion model learning rate', metavar='FLOAT', type=click.FloatRange(min=0), default=1e-4, show_default=True)
 @click.option('--map-depth', help='Mapping network depth  [default: varies]', metavar='INT', type=click.IntRange(min=1))
 @click.option('--mbstd-group', help='Minibatch std group size', metavar='INT', type=click.IntRange(min=1), default=4, show_default=True)
 # Misc settings.
 @click.option('--desc', help='String to include in result dir name', metavar='STR', type=str)
-@click.option('--metrics', help='Quality metrics', metavar='[NAME|A,B,C|none]', type=parse_comma_separated_list, default='fid50k', show_default=True)
-@click.option('--kimg', help='Total training duration', metavar='KIMG', type=click.IntRange(min=1), default=20000, show_default=True)
-@click.option('--tick', help='How often to print progress', metavar='KIMG', type=click.IntRange(min=1), default=1, show_default=True)  ##
+@click.option('--num_steps', help='Total training duration', metavar='INT', type=click.IntRange(min=1), default=100000, show_default=True)
 @click.option('--snap', help='How often to save snapshots', metavar='TICKS', type=click.IntRange(min=1), default=50, show_default=True)  ###
 @click.option('--seed', help='Random seed', metavar='INT', type=click.IntRange(min=0), default=0, show_default=True)
 @click.option('--fp32', help='Disable mixed-precision', metavar='BOOL', type=bool, default=True, show_default=True)  # Let's use fp32 all the case without clamping
 @click.option('--nobench', help='Disable cuDNN benchmarking', metavar='BOOL', type=bool, default=False, show_default=True)
 @click.option('--workers', help='DataLoader worker processes', metavar='INT', type=click.IntRange(min=0), default=3, show_default=True)
+@click.option('--ema_update_every', help='How often update ema model',  metavar='INT', type=click.IntRange(min=1), default=10, show_default=True)
+@click.option('--ema_decay', help='The decay to update ema',  metavar='FLOAT', type=click.FloatRange(min=0), default=0.995, show_default=True)
+@click.option('--diff_ch', help='first layer channel num for diffusion model',  metavar='INT', type=click.IntRange(min=1), default=4, show_default=True)
 @click.option('-n', '--dry-run', help='Print training options and exit', is_flag=True)
+
+# inference options
+@click.option('--image_cond', help='The path of image for conditioning',  metavar='STR', type=str, default=None, show_default=True)
+@click.option('--text_cond', help='The text for conditioning',  metavar='STR', type=str, default=None, show_default=True)
+
 def main(**kwargs):
     # Initialize config.
     print('==> start')
@@ -225,40 +306,14 @@ def main(**kwargs):
     c.D_kwargs = dnnlib.EasyDict(
         class_name='training.networks_get3d.Discriminator', block_kwargs=dnnlib.EasyDict(),
         mapping_kwargs=dnnlib.EasyDict(), epilogue_kwargs=dnnlib.EasyDict())
-    c.G_opt_kwargs = dnnlib.EasyDict(class_name='torch.optim.Adam', betas=[0, 0.99], eps=1e-8)
-    c.D_opt_kwargs = dnnlib.EasyDict(class_name='torch.optim.Adam', betas=[0, 0.99], eps=1e-8)
+    c.diffusion_opt_kwargs = dnnlib.EasyDict(class_name='torch.optim.Adam', betas=[0.9, 0.99], eps=1e-8)
     
-    # # Classifier
-    # c.C_kwargs = dnnlib.EasyDict(
-    #     class_name='training.networks_get3d.Classifier', block_kwargs=dnnlib.EasyDict(),
-    #     mapping_kwargs=dnnlib.EasyDict(), epilogue_kwargs=dnnlib.EasyDict())
-    # c.C_opt_kwargs = dnnlib.EasyDict(class_name='torch.optim.Adam', betas=[0, 0.99], eps=1e-8)
-
-    c.loss_kwargs = dnnlib.EasyDict(class_name='training.loss.StyleGAN2Loss')
-
-    c.data_loader_kwargs = dnnlib.EasyDict(pin_memory=True, prefetch_factor=2)
-    c.inference_vis = opts.inference_vis
-    # Training set.
-    if opts.inference_vis:
-        c.inference_to_generate_textured_mesh = opts.inference_to_generate_textured_mesh
-        c.inference_save_interpolation = opts.inference_save_interpolation
-        c.inference_compute_fid = opts.inference_compute_fid
-        c.inference_generate_geo = opts.inference_generate_geo
-
-    c.training_set_kwargs, dataset_name = init_dataset_kwargs(data=opts.data, opt=opts)
-    if opts.cond and not c.training_set_kwargs.use_labels:
-        raise click.ClickException('--cond=True requires labels specified in dataset.json')
-    c.training_set_kwargs.split = 'train' if opts.use_shapenet_split else 'all'
-    if opts.use_shapenet_split and opts.inference_vis:
-        c.training_set_kwargs.split = 'test'
-    c.training_set_kwargs.use_labels = opts.cond
-    c.training_set_kwargs.xflip = False
     # Hyperparameters & settings.p
     c.G_kwargs.one_3d_generator = opts.one_3d_generator
     c.G_kwargs.n_implicit_layer = opts.n_implicit_layer
     c.G_kwargs.deformation_multiplier = opts.deformation_multiplier
     c.resume_pretrain = opts.resume_pretrain
-    c.D_reg_interval = opts.d_reg_interval
+    c.backbone_pretrain = opts.backbone_pretrain
     c.G_kwargs.use_style_mixing = opts.use_style_mixing
     c.G_kwargs.dmtet_scale = opts.dmtet_scale
     c.G_kwargs.feat_channel = opts.feat_channel
@@ -270,8 +325,7 @@ def main(**kwargs):
     c.G_kwargs.use_tri_plane = opts.use_tri_plane
     c.D_kwargs.data_camera_mode = opts.data_camera_mode
     c.D_kwargs.add_camera_cond = opts.add_camera_cond
-    # c.C_kwargs.data_camera_mode = opts.data_camera_mode
-    # c.C_kwargs.add_camera_cond = opts.add_camera_cond
+
     c.G_kwargs.use_opengl = opts.use_opengl
 
     c.G_kwargs.tet_res = opts.tet_res
@@ -279,8 +333,6 @@ def main(**kwargs):
     c.G_kwargs.geometry_type = opts.geometry_type
     c.num_gpus = opts.gpus
     c.batch_size = opts.batch
-    c.batch_gpu = opts.batch_gpu or opts.batch // opts.gpus
-    # c.G_kwargs.geo_pos_enc = opts.geo_pos_enc
     c.G_kwargs.data_camera_mode = opts.data_camera_mode
     c.G_kwargs.channel_base = c.D_kwargs.channel_base = opts.cbase
     c.G_kwargs.channel_max = c.D_kwargs.channel_max = opts.cmax
@@ -290,40 +342,27 @@ def main(**kwargs):
     c.D_kwargs.architecture = opts.d_architecture
     c.D_kwargs.block_kwargs.freeze_layers = opts.freezed
     c.D_kwargs.epilogue_kwargs.mbstd_group_size = opts.mbstd_group
-    # c.C_kwargs.architecture = opts.d_architecture
-    # c.C_kwargs.block_kwargs.freeze_layers = opts.freezed
-    # c.C_kwargs.epilogue_kwargs.mbstd_group_size = opts.mbstd_group
 
-    c.loss_kwargs.gamma_mask = opts.gamma if opts.gamma_mask == 0.0 else opts.gamma_mask
-    c.loss_kwargs.r1_gamma = opts.gamma
-    c.G_opt_kwargs.lr = (0.002 if opts.cfg == 'stylegan2' else 0.0025) if opts.glr is None else opts.glr
-    c.D_opt_kwargs.lr = opts.dlr
-    # c.C_opt_kwargs.lr = opts.dlr
-    c.metrics = opts.metrics
-    c.total_kimg = opts.kimg
-    c.kimg_per_tick = opts.tick
+    c.diffusion_opt_kwargs.lr = opts.lr
+    c.diff_ch = opts.diff_ch
+
+    c.train_num_steps = opts.num_steps
     c.image_snapshot_ticks = c.network_snapshot_ticks = opts.snap
-    c.random_seed = c.training_set_kwargs.random_seed = opts.seed
-    c.data_loader_kwargs.num_workers = opts.workers
-    c.network_snapshot_ticks = 50
+    c.network_snapshot_ticks = 5000
     # Sanity checks.
     if c.batch_size % c.num_gpus != 0:
         raise click.ClickException('--batch must be a multiple of --gpus')
-    if c.batch_size % (c.num_gpus * c.batch_gpu) != 0:
-        raise click.ClickException('--batch must be a multiple of --gpus times --batch-gpu')
-    if c.batch_gpu < c.D_kwargs.epilogue_kwargs.mbstd_group_size:
-        raise click.ClickException('--batch-gpu cannot be smaller than --mbstd')
-    if any(not metric_main.is_valid_metric(metric) for metric in c.metrics):
-        raise click.ClickException(
-            '\n'.join(['--metrics can only contain the following values:'] + metric_main.list_valid_metrics()))
 
     # Base configuration.
-    c.ema_kimg = c.batch_size * 10 / 32
+    c.ema_update_every = opts.ema_update_every
+    c.ema_decay = opts.ema_decay
     c.G_kwargs.class_name = 'training.networks_get3d.GeneratorDMTETMesh'
-    c.loss_kwargs.style_mixing_prob = 0.9  # Enable style mixing regularization.
-    c.loss_kwargs.pl_weight = 0.0  # Enable path length regularization.
-    c.G_reg_interval = 4  # Enable lazy regularization for G.
+    # c.loss_kwargs.style_mixing_prob = 0.9  # Enable style mixing regularization.
+    # c.loss_kwargs.pl_weight = 0.0  # Enable path length regularization.
     c.G_kwargs.fused_modconv_default = 'inference_only'  # Speed up training by using regular convolutions instead of grouped convolutions.
+    c.image_cond = opts.image_cond
+    c.text_cond = opts.text_cond
+    c.random_seed = opts.seed
     # Performance-related toggles.
     if opts.fp32:
         c.G_kwargs.num_fp16_res = c.D_kwargs.num_fp16_res = 0
@@ -332,7 +371,7 @@ def main(**kwargs):
         c.cudnn_benchmark = False
 
     # Description string.
-    desc = f'{opts.cfg:s}-{dataset_name:s}-gpus{c.num_gpus:d}-batch{c.batch_size:d}-gamma{c.loss_kwargs.r1_gamma:g}'
+    desc = f'{opts.cfg:s}-diffusion-gpus{c.num_gpus:d}-batch{c.batch_size:d}'
     if opts.desc is not None:
         desc += f'-{opts.desc}'
     # Launch.
